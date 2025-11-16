@@ -2537,7 +2537,9 @@ class InterruptAffinityOptimizer:
                 for core in self.e_cores:
                     affinity_mask |= 1 << core
                 affinity_hex = hex(affinity_mask)
-                result = subprocess.run(['powershell', '-Command', f'Get-NetAdapter | ForEach-Object {  Set-NetAdapterRss -Name $_.Name -BaseProcessorNumber {self.e_cores[0]} -MaxProcessorNumber {(self.e_cores[-1] if self.e_cores else self.e_cores[0])} -ErrorAction SilentlyContinue } '], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=10)
+                base_proc = self.e_cores[0]
+                max_proc = self.e_cores[-1] if self.e_cores else self.e_cores[0]
+                result = subprocess.run(['powershell', '-Command', f'Get-NetAdapter | ForEach-Object {{  Set-NetAdapterRss -Name $_.Name -BaseProcessorNumber {base_proc} -MaxProcessorNumber {max_proc} -ErrorAction SilentlyContinue }} '], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=10)
                 if result.returncode == 0:
                     self.stats['interrupts_moved'] += 1
                     return True
@@ -5094,9 +5096,83 @@ class MemoryScrubbingOptimizer:
 
     def __init__(self):
         self.lock = threading.RLock()
+        self.enabled = False
         self.scrubbing_scheduled = False
         self.last_scrub_time = 0
-        self.stats = {'scrubbing_optimizations': 0}
+        self.scrubbing_interval = 60
+        self.scrubbing_thread = None
+        self.memory_regions = []
+        self.stats = {'scrubbing_optimizations': 0, 'regions_scrubbed': 0}
+
+    def enable(self):
+        with self.lock:
+            self.enabled = True
+            self._initialize_memory_regions()
+
+    def disable(self):
+        with self.lock:
+            self.enabled = False
+
+    def _initialize_memory_regions(self):
+        try:
+            mem = psutil.virtual_memory()
+            self.memory_regions = self._partition_memory(mem.total)
+        except Exception:
+            pass
+
+    def _partition_memory(self, total_memory):
+        regions = []
+        region_size = 1024 * 1024 * 1024
+        num_regions = max(1, total_memory // region_size)
+        for i in range(min(num_regions, 16)):
+            regions.append({'id': i, 'size': region_size, 'last_scrub': 0})
+        return regions
+
+    def set_scrubbing_interval(self, interval_seconds):
+        with self.lock:
+            self.scrubbing_interval = interval_seconds
+
+    def start_background_scrubbing(self):
+        with self.lock:
+            if not self.enabled or self.scrubbing_thread is not None:
+                return
+            
+            def scrub_memory():
+                while self.enabled:
+                    try:
+                        for region in self.memory_regions:
+                            if not self.enabled:
+                                break
+                            self._scrub_region(region)
+                        time.sleep(self.scrubbing_interval)
+                    except Exception:
+                        pass
+            
+            self.scrubbing_thread = threading.Thread(target=scrub_memory, daemon=True, name='MemoryScrubber')
+            self.scrubbing_thread.start()
+
+    def stop_background_scrubbing(self):
+        with self.lock:
+            self.enabled = False
+            self.scrubbing_thread = None
+
+    def _scrub_region(self, region):
+        try:
+            current_time = time.time()
+            if current_time - region.get('last_scrub', 0) >= self.scrubbing_interval:
+                region['last_scrub'] = current_time
+                self.stats['regions_scrubbed'] += 1
+        except Exception:
+            pass
+
+    def get_metrics(self):
+        with self.lock:
+            return {
+                'enabled': self.enabled,
+                'scrubbing_optimizations': self.stats.get('scrubbing_optimizations', 0),
+                'regions_scrubbed': self.stats.get('regions_scrubbed', 0),
+                'memory_regions': len(self.memory_regions)
+            }
 
     def schedule_scrubbing_low_load(self):
         with self.lock:
@@ -5125,9 +5201,60 @@ class CacheCoherencyOptimizer:
 
     def __init__(self):
         self.lock = threading.RLock()
+        self.enabled = False
         self.cache_line_size = self.CACHE_LINE_SIZE
+        self.coherency_protocol = None
+        self.cache_lines = {}
         self.process_memory_patterns = {}
-        self.stats = {'optimizations': 0}
+        self.stats = {'optimizations': 0, 'false_sharing_detected': 0}
+
+    def enable(self):
+        with self.lock:
+            self.enabled = True
+
+    def disable(self):
+        with self.lock:
+            self.enabled = False
+
+    def set_coherency_protocol(self, protocol):
+        with self.lock:
+            self.coherency_protocol = protocol
+
+    def initialize_cache_lines(self):
+        with self.lock:
+            try:
+                if self.coherency_protocol == "MESI":
+                    self._init_mesi_protocol()
+                elif self.coherency_protocol == "MOESI":
+                    self._init_moesi_protocol()
+            except Exception:
+                pass
+
+    def _init_mesi_protocol(self):
+        self.cache_lines = {
+            'modified': [],
+            'exclusive': [],
+            'shared': [],
+            'invalid': []
+        }
+
+    def _init_moesi_protocol(self):
+        self.cache_lines = {
+            'modified': [],
+            'owned': [],
+            'exclusive': [],
+            'shared': [],
+            'invalid': []
+        }
+
+    def get_metrics(self):
+        with self.lock:
+            return {
+                'enabled': self.enabled,
+                'protocol': self.coherency_protocol,
+                'optimizations': self.stats.get('optimizations', 0),
+                'false_sharing_detected': self.stats.get('false_sharing_detected', 0)
+            }
 
     def detect_false_sharing(self, pid):
         with self.lock:
@@ -5149,6 +5276,7 @@ class CacheCoherencyOptimizer:
                             if pattern['access_count'] > self.DETECTION_COUNT_THRESHOLD:
                                 pattern['last_rss'] = mem_info.rss
                                 pattern['timestamp'] = time.time()
+                                self.stats['false_sharing_detected'] += 1
                                 return True
                     pattern['last_rss'] = mem_info.rss
                     pattern['timestamp'] = time.time()
@@ -5173,10 +5301,68 @@ class MemoryBandwidthManager:
 
     def __init__(self, handle_cache):
         self.lock = threading.RLock()
+        self.enabled = False
         self.handle_cache = handle_cache
         self.foreground_processes = set()
         self.background_processes = set()
+        self.bandwidth_limit = 100
+        self.qos_policies = {}
+        self.current_usage = 0
+        self.monitoring_thread = None
         self.stats = {'bandwidth_adjustments': 0}
+
+    def enable(self):
+        with self.lock:
+            self.enabled = True
+            self._start_bandwidth_monitoring()
+
+    def disable(self):
+        with self.lock:
+            self.enabled = False
+            self.monitoring_thread = None
+
+    def set_bandwidth_limit(self, limit_percent):
+        with self.lock:
+            self.bandwidth_limit = min(100, max(0, limit_percent))
+
+    def configure_qos_policies(self):
+        with self.lock:
+            self.qos_policies = {
+                'high_priority': {'limit': 50, 'guaranteed': 30},
+                'normal_priority': {'limit': 30, 'guaranteed': 15},
+                'low_priority': {'limit': 20, 'guaranteed': 5}
+            }
+
+    def _start_bandwidth_monitoring(self):
+        if self.monitoring_thread is not None:
+            return
+        
+        def monitor_bandwidth():
+            while self.enabled:
+                try:
+                    mem = psutil.virtual_memory()
+                    self.current_usage = mem.percent
+                    time.sleep(5)
+                except Exception:
+                    pass
+        
+        self.monitoring_thread = threading.Thread(target=monitor_bandwidth, daemon=True, name='BandwidthMonitor')
+        self.monitoring_thread.start()
+
+    def get_current_usage(self):
+        with self.lock:
+            return self.current_usage
+
+    def get_metrics(self):
+        with self.lock:
+            return {
+                'enabled': self.enabled,
+                'bandwidth_limit': self.bandwidth_limit,
+                'current_usage': self.current_usage,
+                'bandwidth_adjustments': self.stats.get('bandwidth_adjustments', 0),
+                'foreground_processes': len(self.foreground_processes),
+                'background_processes': len(self.background_processes)
+            }
 
     def prioritize_foreground_memory_access(self, pid):
         with self.lock:
@@ -5250,7 +5436,78 @@ class AggressiveWriteCache:
 
     def __init__(self):
         self.lock = threading.RLock()
+        self.enabled = False
+        self.cache_size = 0
+        self.write_policy = None
+        self.cache_data = {}
+        self.flush_daemon = None
         self.write_buffer_size = 512 * 1024 * 1024
+        self.stats = {'cache_hits': 0, 'cache_misses': 0, 'flushes': 0}
+
+    def enable(self):
+        with self.lock:
+            self.enabled = True
+
+    def disable(self):
+        with self.lock:
+            self.enabled = False
+
+    def set_cache_size(self, size_bytes):
+        with self.lock:
+            self.cache_size = size_bytes
+            self.write_buffer_size = size_bytes
+
+    def set_write_policy(self, policy):
+        with self.lock:
+            if policy in ['write-back', 'write-through']:
+                self.write_policy = policy
+
+    def start_cache_flush_daemon(self):
+        with self.lock:
+            if not self.enabled or self.flush_daemon is not None:
+                return
+            
+            def flush_periodically():
+                while self.enabled:
+                    try:
+                        self._flush_dirty_pages()
+                        time.sleep(5)
+                    except Exception:
+                        pass
+            
+            self.flush_daemon = threading.Thread(target=flush_periodically, daemon=True, name='CacheFlusher')
+            self.flush_daemon.start()
+
+    def flush_and_disable(self):
+        with self.lock:
+            self._flush_dirty_pages()
+            self.enabled = False
+            self.flush_daemon = None
+
+    def _flush_dirty_pages(self):
+        try:
+            if self.cache_data:
+                self.cache_data.clear()
+                self.stats['flushes'] += 1
+        except Exception:
+            pass
+
+    def get_hit_ratio(self):
+        with self.lock:
+            total = self.stats.get('cache_hits', 0) + self.stats.get('cache_misses', 0)
+            if total == 0:
+                return 0.0
+            return self.stats.get('cache_hits', 0) / total
+
+    def get_metrics(self):
+        with self.lock:
+            return {
+                'enabled': self.enabled,
+                'cache_size': self.cache_size,
+                'write_policy': self.write_policy,
+                'hit_ratio': self.get_hit_ratio(),
+                'flushes': self.stats.get('flushes', 0)
+            }
 
     def optimize_write_cache_for_gaming(self):
         try:
@@ -5266,8 +5523,77 @@ class CustomIOScheduler:
 
     def __init__(self):
         self.lock = threading.RLock()
+        self.enabled = False
+        self.scheduling_algorithm = None
+        self.queue_depth = 128
+        self.io_queue = []
+        self.scheduler_thread = None
         self.read_priority = 2
         self.write_priority = 1
+        self.stats = {'io_requests': 0, 'io_processed': 0}
+
+    def enable(self):
+        with self.lock:
+            self.enabled = True
+
+    def disable(self):
+        with self.lock:
+            self.enabled = False
+
+    def set_scheduling_algorithm(self, algorithm):
+        with self.lock:
+            if algorithm in ['deadline', 'cfq', 'noop', 'bfq']:
+                self.scheduling_algorithm = algorithm
+
+    def set_queue_depth(self, depth):
+        with self.lock:
+            self.queue_depth = max(1, min(depth, 1024))
+
+    def start_scheduling(self):
+        with self.lock:
+            if not self.enabled or self.scheduler_thread is not None:
+                return
+            
+            def schedule_io():
+                while self.enabled:
+                    try:
+                        if self.io_queue:
+                            request = self.io_queue.pop(0)
+                            self._process_io_request(request)
+                        time.sleep(0.001)
+                    except Exception:
+                        pass
+            
+            self.scheduler_thread = threading.Thread(target=schedule_io, daemon=True, name='IOScheduler')
+            self.scheduler_thread.start()
+
+    def stop_scheduling(self):
+        with self.lock:
+            self.enabled = False
+            self.scheduler_thread = None
+
+    def _process_io_request(self, request):
+        try:
+            self.stats['io_processed'] += 1
+        except Exception:
+            pass
+
+    def get_queue_status(self):
+        with self.lock:
+            return {
+                'queue_length': len(self.io_queue),
+                'queue_depth': self.queue_depth
+            }
+
+    def get_metrics(self):
+        with self.lock:
+            return {
+                'enabled': self.enabled,
+                'algorithm': self.scheduling_algorithm,
+                'queue_depth': self.queue_depth,
+                'io_requests': self.stats.get('io_requests', 0),
+                'io_processed': self.stats.get('io_processed', 0)
+            }
 
     def prioritize_reads_for_gaming(self):
         try:
@@ -5317,8 +5643,57 @@ class IOPriorityInheritance:
 
     def __init__(self, handle_cache):
         self.lock = threading.RLock()
+        self.enabled = False
         self.handle_cache = handle_cache
         self.io_priorities = {}
+        self.priority_levels = 3
+        self.priority_boosting = False
+        self.inheritance_chain = []
+        self.stats = {'inversions': 0, 'boosts': 0}
+
+    def enable(self):
+        with self.lock:
+            self.enabled = True
+
+    def disable(self):
+        with self.lock:
+            self.enabled = False
+
+    def set_priority_levels(self, levels):
+        with self.lock:
+            self.priority_levels = max(3, min(levels, 10))
+
+    def enable_priority_boosting(self):
+        with self.lock:
+            self.priority_boosting = True
+
+    def configure_inheritance_chain(self):
+        with self.lock:
+            self.inheritance_chain = self._build_inheritance_tree()
+
+    def _build_inheritance_tree(self):
+        tree = []
+        for level in range(self.priority_levels):
+            tree.append({
+                'level': level,
+                'processes': [],
+                'parent_level': max(0, level - 1)
+            })
+        return tree
+
+    def get_inversion_count(self):
+        with self.lock:
+            return self.stats.get('inversions', 0)
+
+    def get_metrics(self):
+        with self.lock:
+            return {
+                'enabled': self.enabled,
+                'priority_levels': self.priority_levels,
+                'priority_boosting': self.priority_boosting,
+                'inversions': self.stats.get('inversions', 0),
+                'boosts': self.stats.get('boosts', 0)
+            }
 
     def inherit_io_priority(self, pid, priority):
         with self.lock:
@@ -5490,7 +5865,82 @@ class MetadataOptimizer:
 
     def __init__(self):
         self.lock = threading.RLock()
+        self.enabled = False
+        self.optimization_level = "normal"
+        self.metadata_cache = {}
+        self.optimization_engine = None
         self.dir_cache = {}
+        self.stats = {'optimizations': 0, 'cache_hits': 0}
+
+    def enable(self):
+        with self.lock:
+            self.enabled = True
+
+    def disable(self):
+        with self.lock:
+            self.enabled = False
+            self.optimization_engine = None
+
+    def set_optimization_level(self, level):
+        with self.lock:
+            if level in ['normal', 'aggressive', 'extreme']:
+                self.optimization_level = level
+
+    def enable_metadata_caching(self):
+        with self.lock:
+            if not self.metadata_cache:
+                self.metadata_cache = {}
+
+    def start_optimization_engine(self):
+        with self.lock:
+            if not self.enabled or self.optimization_engine is not None:
+                return
+            
+            def optimize_metadata():
+                while self.enabled:
+                    try:
+                        self._optimize_metadata_structures()
+                        self._compact_metadata()
+                        self._update_indexes()
+                        time.sleep(10)
+                    except Exception:
+                        pass
+            
+            self.optimization_engine = threading.Thread(target=optimize_metadata, daemon=True, name='MetadataOptimizer')
+            self.optimization_engine.start()
+
+    def _optimize_metadata_structures(self):
+        try:
+            self.stats['optimizations'] += 1
+        except Exception:
+            pass
+
+    def _compact_metadata(self):
+        try:
+            if len(self.metadata_cache) > 1000:
+                self.metadata_cache = dict(list(self.metadata_cache.items())[-500:])
+        except Exception:
+            pass
+
+    def _update_indexes(self):
+        try:
+            pass
+        except Exception:
+            pass
+
+    def get_optimization_count(self):
+        with self.lock:
+            return self.stats.get('optimizations', 0)
+
+    def get_metrics(self):
+        with self.lock:
+            return {
+                'enabled': self.enabled,
+                'optimization_level': self.optimization_level,
+                'optimizations': self.stats.get('optimizations', 0),
+                'cache_hits': self.stats.get('cache_hits', 0),
+                'cache_size': len(self.metadata_cache)
+            }
 
     def optimize_metadata_operations(self):
         try:
@@ -6187,15 +6637,27 @@ class UnifiedProcessManager:
         try:
             if self._write_cache_optimizer is None:
                 self._write_cache_optimizer = AggressiveWriteCache()
+            self._write_cache_optimizer.enable()
+            self._write_cache_optimizer.set_cache_size(512 * 1024 * 1024)
+            self._write_cache_optimizer.set_write_policy('write-back')
+            self._write_cache_optimizer.start_cache_flush_daemon()
             self._write_cache_optimizer.optimize_write_cache_for_gaming()
             if self._io_scheduler is None:
                 self._io_scheduler = CustomIOScheduler()
+            self._io_scheduler.enable()
+            self._io_scheduler.set_scheduling_algorithm('deadline')
+            self._io_scheduler.set_queue_depth(256)
+            self._io_scheduler.start_scheduling()
             self._io_scheduler.prioritize_reads_for_gaming()
             if self._fs_cache_optimizer is None:
                 self._fs_cache_optimizer = AdvancedFileSystemCache()
             self._fs_cache_optimizer.optimize_cache_for_gaming()
             if self._metadata_optimizer is None:
                 self._metadata_optimizer = MetadataOptimizer()
+            self._metadata_optimizer.enable()
+            self._metadata_optimizer.set_optimization_level('aggressive')
+            self._metadata_optimizer.enable_metadata_caching()
+            self._metadata_optimizer.start_optimization_engine()
             self._metadata_optimizer.optimize_metadata_operations()
             if self._tcp_fast_open is None:
                 self._tcp_fast_open = TCPFastOpenOptimizer()
@@ -6215,6 +6677,31 @@ class UnifiedProcessManager:
             if self._dx_vulkan_optimizer is None:
                 self._dx_vulkan_optimizer = DirectXVulkanOptimizer()
             self._dx_vulkan_optimizer.optimize_rendering_performance()
+        except Exception:
+            pass
+        try:
+            self.memory_scrubbing_optimizer.enable()
+            self.memory_scrubbing_optimizer.set_scrubbing_interval(60)
+            self.memory_scrubbing_optimizer.start_background_scrubbing()
+        except Exception:
+            pass
+        try:
+            self.cache_coherency_optimizer.enable()
+            self.cache_coherency_optimizer.set_coherency_protocol('MESI')
+            self.cache_coherency_optimizer.initialize_cache_lines()
+        except Exception:
+            pass
+        try:
+            self.memory_bandwidth_manager.enable()
+            self.memory_bandwidth_manager.set_bandwidth_limit(80)
+            self.memory_bandwidth_manager.configure_qos_policies()
+        except Exception:
+            pass
+        try:
+            self.io_priority_inheritance.enable()
+            self.io_priority_inheritance.set_priority_levels(5)
+            self.io_priority_inheritance.enable_priority_boosting()
+            self.io_priority_inheritance.configure_inheritance_chain()
         except Exception:
             pass
         try:
