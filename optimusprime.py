@@ -448,6 +448,13 @@ def memoize_with_ttl(ttl_seconds=300):
     return decorator
 
 class HardwareDetector:
+    """Detects hardware configuration using WMIC.
+    
+    NOTE: WMIC is deprecated in Windows 10/11 and may be removed in future versions.
+    Consider migrating to PowerShell (Get-WmiObject/Get-CimInstance) or pywin32 WMI
+    in the future. Current implementation has robust fallback handling for when WMIC
+    is unavailable.
+    """
 
     def __init__(self):
         self.cpu_vendor = None
