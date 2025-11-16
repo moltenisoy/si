@@ -1959,6 +1959,16 @@ class CPUPinningEngine:
             return self.stats.copy()
 
 class LargePageManager:
+    """Manages large page allocation tracking for processes.
+    
+    LIMITATION: This class cannot actually force external processes to use large pages.
+    Large pages must be requested by the target process itself at memory allocation time
+    using VirtualAlloc with MEM_LARGE_PAGES flag. An external process like this optimizer
+    cannot retroactively enable large pages for already-running processes.
+    
+    The SeLockMemoryPrivilege enabled here applies to THIS process, not target processes.
+    This class primarily tracks which processes might benefit from large pages.
+    """
 
     def __init__(self, handle_cache):
         self.handle_cache = handle_cache
@@ -2025,6 +2035,16 @@ class LargePageManager:
             return self.stats.copy()
 
 class AdvancedWorkingSetTrimmer:
+    """Trims process working sets to free memory.
+    
+    NOTE: Both trim_private_pages() and trim_mapped_files() call the same underlying
+    function _trim_working_set(). SetProcessWorkingSetSize(-1, -1) instructs Windows
+    to trim the entire working set - it does NOT distinguish between private pages
+    and mapped files. The separate methods exist for API compatibility and statistics
+    tracking, but functionally they are identical.
+    
+    For actual working set trimming, WorkingSetOptimizer class should be preferred.
+    """
 
     def __init__(self, handle_cache):
         self.handle_cache = handle_cache
@@ -2042,6 +2062,7 @@ class AdvancedWorkingSetTrimmer:
             return False
 
     def trim_private_pages(self, pid):
+        """Trim working set (affects both private and mapped pages)."""
         with self.lock:
             if self._trim_working_set(pid):
                 self.stats['private_page_trims'] += 1
@@ -2049,6 +2070,7 @@ class AdvancedWorkingSetTrimmer:
             return False
 
     def trim_mapped_files(self, pid):
+        """Trim working set (affects both private and mapped pages)."""
         with self.lock:
             if self._trim_working_set(pid):
                 self.stats['mapped_file_trims'] += 1
@@ -2111,6 +2133,16 @@ class PrefetchOptimizer:
             return False
 
     def optimize_prefetch_for_process(self, pid, exe_path):
+        """Attempt to trigger prefetch optimization for a process executable.
+        
+        LIMITATION: Simply opening and closing a file handle to the executable is unlikely
+        to meaningfully influence Windows' Prefetch/Superfetch (SysMain) behavior. These
+        are complex OS-level services that analyze actual execution patterns over time.
+        
+        This method is a best-effort approach with minimal expected impact. True prefetch
+        optimization happens automatically through Windows' built-in telemetry and cannot
+        be directly controlled by external processes.
+        """
         with self.lock:
             if not self.should_optimize_prefetch():
                 return False
@@ -2242,10 +2274,14 @@ class ProcessServiceManager:
             return self.stats.copy()
 
 class CPUParkingController:
+    """Controls CPU parking globally via power plan settings.
+    
+    Note: CPU parking cannot be controlled per-core via powercfg. The CPMINCORES setting
+    is a global minimum for the entire system, not per-core.
+    """
 
     def __init__(self):
         self.lock = threading.RLock()
-        self.parking_disabled_cores = set()
         self.stats = {'total_parking_changes': 0, 'disabled_count': 0, 'enabled_count': 0}
 
     def disable_cpu_parking(self):
