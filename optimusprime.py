@@ -338,7 +338,7 @@ class CTypesStructurePool:
                 self._pools[type_name] = []
             pool = self._pools[type_name]
             if len(pool) < self.max_pool_size:
-                pool.append(type(structure)())
+                pool.append(structure)
 
 class SimpleBloomFilter:
     __slots__ = ('_bit_array', '_size', '_hash_count')
@@ -384,13 +384,15 @@ class RegistryWriteBuffer:
         self.last_flush = time.time()
         self.max_buffer_size = max_buffer_size
 
-    def queue_write(self, key_path, value_name, value_type, value_data):
+    def queue_write(self, key_path, value_name, value_type, value_data, hkey=None):
         with self.lock:
             if not key_path or not isinstance(key_path, str):
                 return
             if not isinstance(value_name, str):
                 return
-            self.buffer.append((key_path, value_name, value_type, value_data))
+            if hkey is None:
+                hkey = winreg.HKEY_LOCAL_MACHINE
+            self.buffer.append((hkey, key_path, value_name, value_type, value_data))
             if len(self.buffer) >= self.max_buffer_size:
                 self.flush()
             elif time.time() - self.last_flush >= self.flush_interval:
@@ -400,10 +402,10 @@ class RegistryWriteBuffer:
         with self.lock:
             if not self.buffer:
                 return
-            for key_path, value_name, value_type, value_data in self.buffer:
+            for hkey, key_path, value_name, value_type, value_data in self.buffer:
                 key = None
                 try:
-                    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY)
+                    key = winreg.OpenKey(hkey, key_path, 0, winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY)
                     winreg.SetValueEx(key, value_name, 0, value_type, value_data)
                 except (OSError, PermissionError, WindowsError):
                     pass
@@ -2059,13 +2061,18 @@ class AdvancedWorkingSetTrimmer:
 
 class PrefetchOptimizer:
 
-    def __init__(self):
+    def __init__(self, hardware_detector=None):
         self.lock = threading.RLock()
         self.prefetch_path = 'C:\\Windows\\Prefetch'
         self.stats = {'prefetch_optimizations': 0, 'skipped_ssd': 0, 'skipped_high_load': 0}
+        self.hardware_detector = hardware_detector
 
     def is_mechanical_disk(self):
         try:
+            # Use HardwareDetector if available for accurate SSD/NVMe detection
+            if self.hardware_detector:
+                return not (self.hardware_detector.has_ssd() or self.hardware_detector.has_nvme())
+            # Fallback: assume fixed drives might be mechanical (conservative approach)
             drives = [f'{d}:\\' for d in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' if os.path.exists(f'{d}:\\')]
             for drive in drives:
                 try:
@@ -2241,12 +2248,15 @@ class CPUParkingController:
         self.parking_disabled_cores = set()
         self.stats = {'total_parking_changes': 0, 'disabled_count': 0, 'enabled_count': 0}
 
-    def disable_cpu_parking(self, core_id):
+    def disable_cpu_parking(self):
+        """Disable CPU parking globally for all cores (not per-core).
+        
+        Note: CPMINCORES is a global power plan setting, not per-core.
+        """
         with self.lock:
             try:
                 result = subprocess.run(['powercfg', '/setacvalueindex', 'SCHEME_CURRENT', 'SUB_PROCESSOR', 'CPMINCORES', '100'], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
                 if result.returncode == 0:
-                    self.parking_disabled_cores.add(core_id)
                     self.stats['total_parking_changes'] += 1
                     self.stats['disabled_count'] += 1
                     return True
@@ -2254,12 +2264,15 @@ class CPUParkingController:
             except Exception:
                 return False
 
-    def enable_cpu_parking(self, core_id):
+    def enable_cpu_parking(self):
+        """Enable CPU parking globally for all cores (not per-core).
+        
+        Note: CPMINCORES is a global power plan setting, not per-core.
+        """
         with self.lock:
             try:
                 result = subprocess.run(['powercfg', '/setacvalueindex', 'SCHEME_CURRENT', 'SUB_PROCESSOR', 'CPMINCORES', '0'], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
                 if result.returncode == 0:
-                    self.parking_disabled_cores.discard(core_id)
                     self.stats['total_parking_changes'] += 1
                     self.stats['enabled_count'] += 1
                     return True
@@ -4165,7 +4178,7 @@ class SystemTrayManager:
             return
         try:
             self.manager.cpu_frequency_scaler.set_turbo_mode(enable=True)
-            self.manager.cpu_parking_controller.disable_cpu_parking(0)
+            self.manager.cpu_parking_controller.disable_cpu_parking()
             try:
                 subprocess.run(['powercfg', '/setactive', HIGH_PERFORMANCE_POWER_PLAN_GUID], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=5)
             except Exception:
@@ -6521,6 +6534,7 @@ class UnifiedProcessManager:
             self.interned_process_names[name] = sys.intern(name)
         self.timer_coalescer = AdvancedTimerCoalescer(base_resolution_ms=1)
         self._register_coalesced_tasks()
+        self.hardware_detector = HardwareDetector()
         self.handle_cache = ProcessHandleCache(max_cache_size=256, handle_ttl_seconds=30.0, debug_privilege_enabled=self.debug_privilege_enabled)
         self.process_snapshot = ProcessSnapshotEngine(cache_ttl_ms=500)
         self.settings_applicator = BatchedSettingsApplicator(self.handle_cache)
@@ -6530,7 +6544,7 @@ class UnifiedProcessManager:
         self.cpu_pinning = CPUPinningEngine(self.handle_cache, self.cpu_count, self.topology)
         self.large_page_manager = LargePageManager(self.handle_cache)
         self.advanced_ws_trimmer = AdvancedWorkingSetTrimmer(self.handle_cache)
-        self.prefetch_optimizer = PrefetchOptimizer()
+        self.prefetch_optimizer = PrefetchOptimizer(self.hardware_detector)
         self.memory_priority_manager = MemoryPriorityManager(self.handle_cache)
         self.process_service_manager = ProcessServiceManager()
         self.cpu_parking_controller = CPUParkingController()
@@ -6600,7 +6614,6 @@ class UnifiedProcessManager:
         self._enhanced_system_responsiveness = None
         self._thermal_aware_scheduler = None
         self._process_dependency_analyzer = None
-        self.hardware_detector = HardwareDetector()
         self.decision_cache = OptimizationDecisionCache(ttl_seconds=300)
         self.integrity_validator = IntegrityValidator(self.handle_cache)
         self.suspension_manager = ProcessSuspensionManager()
