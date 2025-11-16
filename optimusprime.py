@@ -1218,8 +1218,9 @@ class ProcessSnapshotEngine:
 
 class BatchedSettingsApplicator:
 
-    def __init__(self, handle_cache):
+    def __init__(self, handle_cache, ctypes_pool=None):
         self.handle_cache = handle_cache
+        self.ctypes_pool = ctypes_pool
         self.pending_operations = defaultdict(list)
         self.lock = threading.RLock()
         self.stats = {'total_batches': 0, 'total_operations': 0, 'avg_batch_size': 0, 'syscalls_saved': 0}
@@ -1367,8 +1368,13 @@ class BatchedSettingsApplicator:
             return False
 
     def _apply_eco_qos(self, handle):
+        throttling_state = None
         try:
-            throttling_state = PROCESS_POWER_THROTTLING_STATE()
+            if self.ctypes_pool:
+                throttling_state = self.ctypes_pool.get_structure(PROCESS_POWER_THROTTLING_STATE)
+            else:
+                throttling_state = PROCESS_POWER_THROTTLING_STATE()
+            
             throttling_state.Version = 1
             throttling_state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED
             throttling_state.StateMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED
@@ -1376,6 +1382,9 @@ class BatchedSettingsApplicator:
             return bool(result)
         except Exception:
             return False
+        finally:
+            if throttling_state and self.ctypes_pool:
+                self.ctypes_pool.return_structure(throttling_state)
 
     def _apply_thread_io_priority(self, pid, io_priority):
         try:
@@ -2333,18 +2342,20 @@ class ContextSwitchReducer:
         self.quantum_adjusted = False
         self.stats = {'quantum_adjustments': 0, 'context_switches_reduced': 0}
 
-    def adjust_quantum_time_slice(self, increase=True):
+    def adjust_quantum_time_slice(self, increase=True, registry_buffer=None):
         with self.lock:
             try:
                 key_path = 'SYSTEM\\CurrentControlSet\\Control\\PriorityControl'
                 value_name = 'Win32PrioritySeparation'
-                if increase:
-                    new_value = 38
+                new_value = 38 if increase else 2
+                
+                if registry_buffer:
+                    registry_buffer.queue_write(key_path, value_name, winreg.REG_DWORD, new_value)
                 else:
-                    new_value = 2
-                key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE)
-                winreg.SetValueEx(key, value_name, 0, winreg.REG_DWORD, new_value)
-                winreg.CloseKey(key)
+                    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE)
+                    winreg.SetValueEx(key, value_name, 0, winreg.REG_DWORD, new_value)
+                    winreg.CloseKey(key)
+                
                 self.quantum_adjusted = True
                 self.stats['quantum_adjustments'] += 1
                 return True
@@ -4258,6 +4269,11 @@ class SystemTrayManager:
             pass
 
     def exit_application(self, icon, item):
+        try:
+            if self.manager and hasattr(self.manager, 'registry_buffer'):
+                self.manager.registry_buffer.flush()
+        except Exception:
+            pass
         self._revert_all_settings()
         self.running = False
         if self.temp_icon:
@@ -4272,7 +4288,7 @@ class SystemTrayManager:
                 self._deactivate_game_mode()
             if self.manager:
                 try:
-                    self.manager.context_switch_reducer.adjust_quantum_time_slice(increase=False)
+                    self.manager.context_switch_reducer.adjust_quantum_time_slice(increase=False, registry_buffer=self.manager.registry_buffer)
                 except Exception:
                     pass
                 try:
@@ -6589,6 +6605,9 @@ class UnifiedProcessManager:
         self.integrity_validator = IntegrityValidator(self.handle_cache)
         self.suspension_manager = ProcessSuspensionManager()
         self.responsiveness_controller = SystemResponsivenessController()
+        self._registry_buffer = None
+        self._ctypes_pool = None
+        self.settings_applicator.ctypes_pool = self.ctypes_pool
         self.load_whitelist()
         self.ram_monitor_active = True
         self.last_ram_cleanup = 0
@@ -6906,6 +6925,12 @@ class UnifiedProcessManager:
         return self._enhanced_smt_optimizer
 
     @property
+    def cpu_pipeline_optimizer(self):
+        if self._cpu_pipeline_optimizer is None:
+            self._cpu_pipeline_optimizer = CPUPipelineOptimizer(self.handle_cache)
+        return self._cpu_pipeline_optimizer
+
+    @property
     def tlb_optimizer(self):
         if self._tlb_optimizer is None:
             self._tlb_optimizer = TLBOptimizer(self.handle_cache)
@@ -6939,6 +6964,12 @@ class UnifiedProcessManager:
                 self._network_polling = AdaptiveNetworkPollingManager()
                 self.adaptive_polling_mgr = self._network_polling
         return self._network_polling
+
+    @property
+    def network_buffer_tuner(self):
+        if self._network_buffer_tuner is None:
+            self._network_buffer_tuner = DynamicNetworkBufferTuner()
+        return self._network_buffer_tuner
 
     @property
     def advanced_numa_optimizer(self):
@@ -7023,6 +7054,18 @@ class UnifiedProcessManager:
         if self._process_dependency_analyzer is None:
             self._process_dependency_analyzer = ProcessDependencyAnalyzer(self.handle_cache)
         return self._process_dependency_analyzer
+
+    @property
+    def registry_buffer(self):
+        if self._registry_buffer is None:
+            self._registry_buffer = RegistryWriteBuffer(flush_interval=15.0)
+        return self._registry_buffer
+
+    @property
+    def ctypes_pool(self):
+        if self._ctypes_pool is None:
+            self._ctypes_pool = CTypesStructurePool(max_pool_size=20)
+        return self._ctypes_pool
 
     def _intern_process_name(self, name):
         if name in self.interned_process_names:
@@ -7632,7 +7675,7 @@ class UnifiedProcessManager:
 
     def run(self):
         try:
-            self.context_switch_reducer.adjust_quantum_time_slice(increase=True)
+            self.context_switch_reducer.adjust_quantum_time_slice(increase=True, registry_buffer=self.registry_buffer)
             self.interrupt_affinity_optimizer.optimize_interrupt_affinity()
             self.dpc_latency_controller.optimize_dpc_latency()
             self.timer_coalescer.register_task('thermal_check', interval_ms=3000, priority=7)
@@ -7673,6 +7716,12 @@ class UnifiedProcessManager:
                 if iteration_count % 50 == 0:
                     try:
                         self.memory_scrubbing_optimizer.schedule_scrubbing_low_load()
+                    except Exception:
+                        pass
+                if iteration_count % 60 == 0:
+                    try:
+                        current_latency = self.enhanced_network_stack.measure_network_latency()
+                        self.network_buffer_tuner.adjust_buffers_by_latency(current_latency)
                     except Exception:
                         pass
                 if iteration_count % 100 == 0:
