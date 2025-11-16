@@ -1,9 +1,12 @@
 import sys
 import os
 import psutil
+import json
+import subprocess
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 CONFIG_FILE = "config_monitor_thermal.ini"
+CONFIG_JSON = "config.json"
 
 
 class BandejaSistema(QtWidgets.QSystemTrayIcon):
@@ -47,9 +50,12 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         self.lista_juegos = []
         self.lista_blanca = []
 
-        # Cargar configuración
+        self.optimusprime_process = None
+        self.optimusprime_running = False
+
         self.iniciar_con_sistema = False
         self.cargar_configuracion()
+        self.cargar_config_json()
 
         # Configurar estilo general
         self.aplicar_estilo()
@@ -185,6 +191,28 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         except Exception:
             pass
 
+    def cargar_config_json(self):
+        if os.path.exists(CONFIG_JSON):
+            try:
+                with open(CONFIG_JSON, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                    self.lista_juegos = config.get("lista_juegos", [])
+                    self.lista_blanca = config.get("lista_blanca", [])
+                    self.actualizar_listas_tab2()
+            except Exception:
+                pass
+
+    def guardar_config_json(self):
+        try:
+            config = {
+                "lista_juegos": self.lista_juegos,
+                "lista_blanca": self.lista_blanca
+            }
+            with open(CONFIG_JSON, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=4, ensure_ascii=False)
+        except Exception:
+            pass
+
     # ---------------------- PESTAÑA 1: PROCESOS ---------------------- #
 
     def crear_pestana_procesos(self):
@@ -268,6 +296,7 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         if nombre not in self.lista_juegos:
             self.lista_juegos.append(nombre)
             self.actualizar_listas_tab2()
+            self.guardar_config_json()
         QtWidgets.QMessageBox.information(self, "LISTA DE JUEGOS", f"SE AGREGO {nombre.upper()} A LA LISTA DE JUEGOS.")
 
     def agregar_proceso_a_blanca(self):
@@ -278,6 +307,7 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         if nombre not in self.lista_blanca:
             self.lista_blanca.append(nombre)
             self.actualizar_listas_tab2()
+            self.guardar_config_json()
         QtWidgets.QMessageBox.information(self, "LISTA BLANCA", f"SE AGREGO {nombre.upper()} A LA LISTA BLANCA.")
 
     # ---------------------- PESTAÑA 2: LISTAS ---------------------- #
@@ -334,9 +364,9 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "ATENCION", "DEBE SELECCIONAR UN JUEGO.")
             return
         nombre = self.lista_juegos_widget.item(fila).text()
-        # Convertir a formato original posible
         self.lista_juegos.pop(fila)
         self.actualizar_listas_tab2()
+        self.guardar_config_json()
         QtWidgets.QMessageBox.information(self, "LISTA DE JUEGOS", f"SE QUITO {nombre} DE LA LISTA DE JUEGOS.")
 
     def quitar_blanca_seleccionado(self):
@@ -347,6 +377,7 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         nombre = self.lista_blanca_widget.item(fila).text()
         self.lista_blanca.pop(fila)
         self.actualizar_listas_tab2()
+        self.guardar_config_json()
         QtWidgets.QMessageBox.information(self, "LISTA BLANCA", f"SE QUITO {nombre} DE LA LISTA BLANCA.")
 
     # ---------------------- PESTAÑA 3: INTERRUPTORES + CONSOLA ---------------------- #
@@ -359,10 +390,16 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         lbl_titulo.setAlignment(QtCore.Qt.AlignCenter)
         layout.addWidget(lbl_titulo)
 
-        # 8 interruptores (CheckBox estilizados)
         self.interruptores = []
         grid = QtWidgets.QGridLayout()
-        for i in range(8):
+        
+        self.optimusprime_switch = QtWidgets.QCheckBox("OPTIMUSPRIME")
+        self.optimusprime_switch.setChecked(False)
+        self.optimusprime_switch.stateChanged.connect(self.toggle_optimusprime)
+        self.interruptores.append(self.optimusprime_switch)
+        grid.addWidget(self.optimusprime_switch, 0, 0)
+
+        for i in range(1, 8):
             check = QtWidgets.QCheckBox(f"INTERRUPTOR {i + 1}")
             check.setChecked(False)
             check.stateChanged.connect(self.cambio_interruptor_color)
@@ -372,25 +409,95 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
             grid.addWidget(check, fila, col)
         layout.addLayout(grid)
 
-        lbl_consola = QtWidgets.QLabel("CONSOLA DE LOG (FUTURO)")
+        lbl_consola = QtWidgets.QLabel("CONSOLA DE LOG OPTIMUSPRIME")
         lbl_consola.setAlignment(QtCore.Qt.AlignCenter)
         layout.addWidget(lbl_consola)
 
         self.consola_log = QtWidgets.QPlainTextEdit()
         self.consola_log.setReadOnly(True)
-        self.consola_log.setPlainText("AQUI SE MOSTRARAN LOGS EN TIEMPO REAL EN EL FUTURO.")
+        self.consola_log.setPlainText("LOGS DE OPTIMUSPRIME SE MOSTRARAN AQUI.")
         layout.addWidget(self.consola_log)
+
+        self.log_timer = QtCore.QTimer()
+        self.log_timer.timeout.connect(self.actualizar_logs)
+        self.log_timer.start(1000)
 
         self.tab_widget.addTab(pestaña, "INTERRUPTORES")
 
     def cambio_interruptor_color(self):
-        # Cambia el color del texto del checkbox según esté activo o no
         sender = self.sender()
         if isinstance(sender, QtWidgets.QCheckBox):
             if sender.isChecked():
                 sender.setStyleSheet("QCheckBox { color: #00FF00; font-weight: bold; }")
             else:
                 sender.setStyleSheet("QCheckBox { color: #FF0096; font-weight: bold; }")
+
+    def toggle_optimusprime(self):
+        if self.optimusprime_switch.isChecked():
+            self.iniciar_optimusprime()
+        else:
+            self.detener_optimusprime()
+        self.cambio_interruptor_color()
+
+    def iniciar_optimusprime(self):
+        if self.optimusprime_running:
+            return
+        try:
+            script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "optimusprime.py")
+            if not os.path.exists(script_path):
+                self.agregar_log("ERROR: NO SE ENCONTRO optimusprime.py")
+                self.optimusprime_switch.setChecked(False)
+                return
+            
+            self.optimusprime_process = subprocess.Popen(
+                [sys.executable, script_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+            )
+            self.optimusprime_running = True
+            self.agregar_log("OPTIMUSPRIME INICIADO")
+        except Exception as e:
+            self.agregar_log(f"ERROR AL INICIAR OPTIMUSPRIME: {str(e)}")
+            self.optimusprime_switch.setChecked(False)
+
+    def detener_optimusprime(self):
+        if not self.optimusprime_running:
+            return
+        try:
+            if self.optimusprime_process:
+                self.optimusprime_process.terminate()
+                try:
+                    self.optimusprime_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.optimusprime_process.kill()
+                self.optimusprime_process = None
+            self.optimusprime_running = False
+            self.agregar_log("OPTIMUSPRIME DETENIDO")
+        except Exception as e:
+            self.agregar_log(f"ERROR AL DETENER OPTIMUSPRIME: {str(e)}")
+
+    def actualizar_logs(self):
+        if self.optimusprime_running and self.optimusprime_process:
+            try:
+                if self.optimusprime_process.poll() is not None:
+                    self.optimusprime_running = False
+                    self.optimusprime_switch.setChecked(False)
+                    self.agregar_log("OPTIMUSPRIME FINALIZADO")
+                    return
+                
+                import select
+                if hasattr(select, 'select'):
+                    pass
+            except Exception:
+                pass
+
+    def agregar_log(self, mensaje):
+        timestamp = QtCore.QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
+        self.consola_log.appendPlainText(f"[{timestamp}] {mensaje}")
 
     # ---------------------- PESTAÑA 4: CONTROL TERMICO ---------------------- #
 
@@ -499,6 +606,8 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         self.activateWindow()
 
     def cerrar_desde_bandeja(self):
+        if self.optimusprime_running:
+            self.detener_optimusprime()
         self.tray_icon.hide()
         QtWidgets.qApp.quit()
 

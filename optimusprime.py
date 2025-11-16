@@ -4602,11 +4602,11 @@ def load_config():
         script_dir = os.path.dirname(os.path.abspath(__file__))
         config_path = os.path.join(script_dir, 'config.json')
         if not os.path.exists(config_path):
-            return {'whitelist': []}
+            return {'whitelist': [], 'lista_juegos': [], 'lista_blanca': []}
         with open(config_path, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception:
-        return {'whitelist': []}
+        return {'whitelist': [], 'lista_juegos': [], 'lista_blanca': []}
 
 class L3CacheOptimizer:
 
