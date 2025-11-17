@@ -132,6 +132,7 @@ THREAD_SET_INFORMATION = 32
 THREAD_QUERY_INFORMATION = 64
 THREAD_SET_LIMITED_INFORMATION = 1024
 ThreadIoPriority = 43
+ProcessIoPriority = 33
 PROCESS_POWER_THROTTLING_EXECUTION_SPEED = 1
 PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION = 4
 ProcessPowerThrottling = 77
@@ -180,8 +181,8 @@ class SYSTEM_LOGICAL_PROCESSOR_INFORMATION_UNION(ctypes.Union):
 class SYSTEM_LOGICAL_PROCESSOR_INFORMATION(ctypes.Structure):
     _fields_ = [('ProcessorMask', ULONG_PTR), ('Relationship', wintypes.DWORD), ('u', SYSTEM_LOGICAL_PROCESSOR_INFORMATION_UNION)]
 
-class PROCESSENTRY32(ctypes.Structure):
-    _fields_ = [('dwSize', wintypes.DWORD), ('cntUsage', wintypes.DWORD), ('th32ProcessID', wintypes.DWORD), ('th32DefaultHeapID', ctypes.POINTER(wintypes.ULONG)), ('th32ModuleID', wintypes.DWORD), ('cntThreads', wintypes.DWORD), ('th32ParentProcessID', wintypes.DWORD), ('pcPriClassBase', wintypes.LONG), ('dwFlags', wintypes.DWORD), ('szExeFile', ctypes.c_char * 260)]
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [('dwSize', wintypes.DWORD), ('cntUsage', wintypes.DWORD), ('th32ProcessID', wintypes.DWORD), ('th32DefaultHeapID', ctypes.POINTER(wintypes.ULONG)), ('th32ModuleID', wintypes.DWORD), ('cntThreads', wintypes.DWORD), ('th32ParentProcessID', wintypes.DWORD), ('pcPriClassBase', wintypes.LONG), ('dwFlags', wintypes.DWORD), ('szExeFile', ctypes.c_wchar * 260)]
 
 class THREADENTRY32(ctypes.Structure):
     _fields_ = [('dwSize', wintypes.DWORD), ('cntUsage', wintypes.DWORD), ('th32ThreadID', wintypes.DWORD), ('th32OwnerProcessID', wintypes.DWORD), ('tpBasePri', wintypes.LONG), ('tpDeltaPri', wintypes.LONG), ('dwFlags', wintypes.DWORD)]
@@ -901,9 +902,6 @@ class AdvancedTimerCoalescer:
         with self.lock:
             return self.stats.copy()
 
-    def __del__(self):
-        self._deactivate_high_resolution_timer()
-
 class AdaptiveTimerResolutionManager:
 
     def __init__(self):
@@ -994,6 +992,9 @@ class AdaptiveTimerResolutionManager:
             return {'current_resolution_ms': self.current_resolution_ms, 'active_high_res_processes': len(self.active_high_res_processes), 'total_resolution_changes': self.stats['resolution_changes'], 'high_res_activations': self.stats['high_res_activations'], 'energy_save_activations': self.stats['energy_save_activations'], 'estimated_overhead': 0.05}
 
 class ProcessHandleCache:
+    __slots__ = ('max_cache_size', 'handle_ttl', 'cleanup_interval', 'cache', 
+                 'access_frequency', 'lock', 'debug_privilege_enabled', 
+                 'weak_cache', 'stats', 'cleanup_active', 'cleanup_thread')
 
     def __init__(self, max_cache_size=256, handle_ttl_seconds=30.0, cleanup_interval_seconds=10.0, debug_privilege_enabled=True):
         self.max_cache_size = max_cache_size
@@ -1148,8 +1149,8 @@ class ProcessSnapshotEngine:
         self.last_snapshot_time = 0
         self.cached_snapshot = {}
         self.lock = threading.RLock()
-        self.pe32_struct = PROCESSENTRY32()
-        self.pe32_struct.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        self.pe32_struct = PROCESSENTRY32W()
+        self.pe32_struct.dwSize = ctypes.sizeof(PROCESSENTRY32W)
         self.stats = {'total_snapshots': 0, 'cache_hits': 0, 'avg_snapshot_time_ms': 0, 'total_processes_discovered': 0}
 
     def get_process_snapshot(self, force_refresh=False):
@@ -1183,8 +1184,8 @@ class ProcessSnapshotEngine:
         processes = {}
         try:
             pe32 = self.pe32_struct
-            pe32.dwSize = ctypes.sizeof(PROCESSENTRY32)
-            if not kernel32.Process32First(snapshot_handle, ctypes.byref(pe32)):
+            pe32.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+            if not kernel32.Process32FirstW(snapshot_handle, ctypes.byref(pe32)):
                 logger.warning('Process32First failed')
                 return {}
             iteration_count = 0
@@ -1194,15 +1195,13 @@ class ProcessSnapshotEngine:
                     pid = pe32.th32ProcessID
                     if pid <= 0:
                         continue
-                    name = pe32.szExeFile.decode('utf-8', errors='ignore')
+                    name = pe32.szExeFile
                     if name and name.lower().endswith('.exe'):
                         name = sys.intern(name)
                         processes[pid] = {'pid': pid, 'name': name, 'parent_pid': pe32.th32ParentProcessID, 'threads': pe32.cntThreads, 'priority_base': pe32.pcPriClassBase}
-                except UnicodeDecodeError:
-                    logger.debug(f'Failed to decode process name for PID {pid}')
                 except Exception as e:
                     logger.debug(f'Error processing snapshot entry: {e}')
-                if not kernel32.Process32Next(snapshot_handle, ctypes.byref(pe32)):
+                if not kernel32.Process32NextW(snapshot_handle, ctypes.byref(pe32)):
                     break
                 iteration_count += 1
             if iteration_count >= max_iterations:
@@ -1365,15 +1364,8 @@ class BatchedSettingsApplicator:
 
     def _apply_io_priority(self, pid, io_priority):
         try:
-            if not isinstance(io_priority, int) or not 0 <= io_priority <= 3:
-                return False
-            process = psutil.Process(pid)
-            if not process.is_running():
-                return False
-            process.ionice(io_priority)
-            current_io = process.ionice()
-            return current_io == io_priority
-        except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
+            return self._apply_thread_io_priority(pid, io_priority)
+        except Exception:
             return False
 
     def _apply_eco_qos(self, handle):
@@ -1672,21 +1664,21 @@ class ProcessTreeCache:
             self.child_to_parent.clear()
             self.process_info.clear()
             try:
-                pe32 = PROCESSENTRY32()
-                pe32.dwSize = ctypes.sizeof(PROCESSENTRY32)
-                if kernel32.Process32First(snapshot_handle, ctypes.byref(pe32)):
+                pe32 = PROCESSENTRY32W()
+                pe32.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+                if kernel32.Process32FirstW(snapshot_handle, ctypes.byref(pe32)):
                     while True:
                         try:
                             pid = pe32.th32ProcessID
                             ppid = pe32.th32ParentProcessID
-                            name = pe32.szExeFile.decode('utf-8', errors='ignore')
+                            name = pe32.szExeFile
                             self.process_info[pid] = {'pid': pid, 'ppid': ppid, 'name': name, 'threads': pe32.cntThreads}
                             if ppid != 0:
                                 self.parent_to_children[ppid].add(pid)
                                 self.child_to_parent[pid] = ppid
                         except Exception:
                             pass
-                        if not kernel32.Process32Next(snapshot_handle, ctypes.byref(pe32)):
+                        if not kernel32.Process32NextW(snapshot_handle, ctypes.byref(pe32)):
                             break
             finally:
                 kernel32.CloseHandle(snapshot_handle)
