@@ -1959,6 +1959,8 @@ class CPUPinningEngine:
         with self.lock:
             try:
                 numa_cores = self.get_numa_preferred_cores(available_cores)
+                if not numa_cores:
+                    return {'success': False, 'error': 'No cores available'}
                 handle = win32api.OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_INFORMATION, False, pid)
                 if not handle:
                     return {'success': False}
@@ -4286,9 +4288,11 @@ class SystemTrayManager:
             services_to_suspend = ['DiagTrack', 'WSearch', 'SysMain', 'TabletInputService', 'XblAuthManager', 'XblGameSave', 'XboxGipSvc', 'XboxNetApiSvc', 'MapsBroker', 'OneSyncSvc', 'WerSvc', 'wuauserv']
             for service_name in services_to_suspend:
                 try:
-                    subprocess.run(['net', 'stop', service_name], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=5)
+                    check = subprocess.run(['sc', 'query', service_name], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                    if check.returncode == 0:
+                        subprocess.run(['net', 'stop', service_name], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=5)
                 except Exception as e:
-                    logger.warning(f"Operation error: {e}", exc_info=True)
+                    logger.debug(f"Could not stop service {service_name}: {e}")
             try:
                 subprocess.run(['powercfg', '/setacvalueindex', 'SCHEME_CURRENT', 'SUB_PROCESSOR', 'CPMINCORES', '100'], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
                 subprocess.run(['powercfg', '/setactive', 'SCHEME_CURRENT'], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -4421,8 +4425,8 @@ class SystemTrayManager:
             logger.warning(f"Operation error: {e}", exc_info=True)
 
     def open_gui(self, icon, item):
-        if not GUI_AVAILABLE:
-            logger.debug('GUI component not available; ignoring open_gui request')
+        if not GUI_AVAILABLE or ProcessManagerGUI is None:
+            logger.debug('GUI component not available')
             return
         if not self.gui:
             logger.info('Creating GUI on demand...')
@@ -5533,7 +5537,7 @@ class MemoryBandwidthManager:
         self.qos_policies = {}
         self.current_usage = 0
         self.monitoring_thread = None
-        self.stats = {'bandwidth_adjustments': 0}
+        self.stats = {'priority_adjustments': 0}
 
     def enable(self):
         with self.lock:
@@ -5623,7 +5627,7 @@ class MemoryBandwidthManager:
                 'enabled': self.enabled,
                 'bandwidth_limit': self.bandwidth_limit,
                 'current_usage': self.current_usage,
-                'bandwidth_adjustments': self.stats.get('bandwidth_adjustments', 0),
+                'priority_adjustments': self.stats.get('priority_adjustments', 0),
                 'foreground_processes': len(self.foreground_processes),
                 'background_processes': len(self.background_processes)
             }
@@ -5639,7 +5643,7 @@ class MemoryBandwidthManager:
                     if result == 0:
                         self.foreground_processes.add(pid)
                         self.background_processes.discard(pid)
-                        self.stats['bandwidth_adjustments'] += 1
+                        self.stats['priority_adjustments'] += 1
                         return True
             except Exception as e:
                 logger.warning(f"Operation error: {e}", exc_info=True)
@@ -5656,7 +5660,7 @@ class MemoryBandwidthManager:
                     if result == 0:
                         self.background_processes.add(pid)
                         self.foreground_processes.discard(pid)
-                        self.stats['bandwidth_adjustments'] += 1
+                        self.stats['priority_adjustments'] += 1
                         return True
             except Exception as e:
                 logger.warning(f"Operation error: {e}", exc_info=True)
@@ -7144,9 +7148,9 @@ class UnifiedProcessManager:
                                 mask = proc_rel.GroupMask[0].Mask
                                 cpus = self._mask_to_cpu_indices(mask, list(range(self.cpu_count)))
                                 if efficiency_class == 0:
-                                    topology['e_cores'].update(cpus)
-                                else:
                                     topology['p_cores'].update(cpus)
+                                else:
+                                    topology['e_cores'].update(cpus)
                         offset += entry.Size
         except Exception as e:
             logger.warning(f"Operation error: {e}", exc_info=True)
@@ -7207,7 +7211,7 @@ class UnifiedProcessManager:
     def _classify_pe_cores(self):
         p_cores = self.topology.get('p_cores', set())
         e_cores = self.topology.get('e_cores', set())
-        if not (p_cores or e_cores):
+        if not p_cores and not e_cores:
             try:
                 llc_groups = self.topology.get('llc_groups', [])
                 if llc_groups:
@@ -7390,27 +7394,31 @@ class UnifiedProcessManager:
 
     @property
     def thermal_aware_scheduler(self):
-        if self._thermal_aware_scheduler is None:
-            self._thermal_aware_scheduler = ThermalAwareScheduler(self.cpu_count, self.temp_monitor)
-        return self._thermal_aware_scheduler
+        with self.lock:
+            if self._thermal_aware_scheduler is None:
+                self._thermal_aware_scheduler = ThermalAwareScheduler(self.cpu_count, self.temp_monitor)
+            return self._thermal_aware_scheduler
 
     @property
     def process_dependency_analyzer(self):
-        if self._process_dependency_analyzer is None:
-            self._process_dependency_analyzer = ProcessDependencyAnalyzer(self.handle_cache)
-        return self._process_dependency_analyzer
+        with self.lock:
+            if self._process_dependency_analyzer is None:
+                self._process_dependency_analyzer = ProcessDependencyAnalyzer(self.handle_cache)
+            return self._process_dependency_analyzer
 
     @property
     def registry_buffer(self):
-        if self._registry_buffer is None:
-            self._registry_buffer = RegistryWriteBuffer(flush_interval=15.0)
-        return self._registry_buffer
+        with self.lock:
+            if self._registry_buffer is None:
+                self._registry_buffer = RegistryWriteBuffer(flush_interval=15.0)
+            return self._registry_buffer
 
     @property
     def ctypes_pool(self):
-        if self._ctypes_pool is None:
-            self._ctypes_pool = CTypesStructurePool(max_pool_size=20)
-        return self._ctypes_pool
+        with self.lock:
+            if self._ctypes_pool is None:
+                self._ctypes_pool = CTypesStructurePool(max_pool_size=20)
+            return self._ctypes_pool
 
     def _intern_process_name(self, name):
         if name in self.interned_process_names:
@@ -7613,7 +7621,7 @@ class UnifiedProcessManager:
                 settings_to_apply['page_priority'] = desired_page
             if prev.get('disable_boost') != desired_disable_boost:
                 settings_to_apply['disable_boost'] = desired_disable_boost
-            if use_eco_qos and prev.get('eco_qos') != True:
+            if use_eco_qos and not prev.get('eco_qos'):
                 settings_to_apply['eco_qos'] = True
             if trim_ws and (not is_foreground):
                 try:
