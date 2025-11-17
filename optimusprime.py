@@ -6038,13 +6038,6 @@ class DynamicNetworkBufferTuner:
                 self.buffer_size = 65535
             else:
                 self.buffer_size = 131072
-            try:
-                key_path = 'SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters'
-                key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE)
-                winreg.SetValueEx(key, 'TcpWindowSize', 0, winreg.REG_DWORD, self.buffer_size)
-                winreg.CloseKey(key)
-            except Exception as e:
-                logger.warning(f"Error en operación: {e}", exc_info=True)
 
 class BBRCongestionControl:
 
