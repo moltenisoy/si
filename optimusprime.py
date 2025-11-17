@@ -638,10 +638,19 @@ class OptimizationDecisionCache:
                 return
             key = (pid, decision_type)
             self.cache[key] = {'value': value, 'timestamp': time.time()}
+            # Use efficient O(N) pruning instead of O(N log N) sorted
             if len(self.cache) > MAX_CACHE_SIZE:
-                sorted_items = sorted(self.cache.items(), key=lambda x: x[1]['timestamp'])
-                for old_key, _ in sorted_items[:CACHE_CLEANUP_SIZE]:
+                current_time = time.time()
+                # First, remove expired entries
+                expired_keys = [k for k, v in self.cache.items() if current_time - v['timestamp'] >= self.ttl]
+                for old_key in expired_keys:
                     del self.cache[old_key]
+                
+                # If still too large, remove oldest entries by simple iteration
+                if len(self.cache) > MAX_CACHE_SIZE:
+                    keys_to_remove = list(self.cache.keys())[:CACHE_CLEANUP_SIZE]
+                    for old_key in keys_to_remove:
+                        del self.cache[old_key]
 
     def invalidate(self, pid):
         with self.lock:
@@ -1274,6 +1283,13 @@ class ProcessSnapshotEngine:
             return self.stats.copy()
 
 class BatchedSettingsApplicator:
+    """Batches settings operations to reduce syscalls by reusing process handles.
+    
+    The 'syscalls_saved' statistic represents the number of OpenProcess calls saved
+    by reusing a single handle for multiple operations. Without batching, each operation
+    would require opening and closing the process handle separately. This class opens
+    the handle once and performs multiple operations, reducing the total syscalls.
+    """
 
     def __init__(self, handle_cache, ctypes_pool=None):
         self.handle_cache = handle_cache
@@ -2282,13 +2298,21 @@ class ProcessServiceManager:
             self.database = {}
 
     def get_process_config(self, process_name):
+        """Get process configuration from database.
+        
+        Supports both English and Spanish JSON keys for backward compatibility:
+        - 'processes' or 'procesos' for main section
+        - 'system_processes' or 'procesos_sistema' for system processes
+        - 'common_third_party' or 'terceros_comunes' for third-party processes
+        """
         try:
-            processes_section = self.database.get('procesos') or self.database.get('processes', {})
-            system_procs = processes_section.get('procesos_sistema') or processes_section.get('system_processes', [])
+            # Support both English and Spanish keys for backward compatibility
+            processes_section = self.database.get('processes') or self.database.get('procesos', {})
+            system_procs = processes_section.get('system_processes') or processes_section.get('procesos_sistema', [])
             for proc in system_procs:
                 if proc.get('name', '').lower() == process_name.lower():
                     return proc
-            third_party_procs = processes_section.get('terceros_comunes') or processes_section.get('common_third_party', [])
+            third_party_procs = processes_section.get('common_third_party') or processes_section.get('terceros_comunes', [])
             for proc in third_party_procs:
                 if proc.get('name', '').lower() == process_name.lower():
                     return proc
