@@ -1,0 +1,166 @@
+Ortografía / mensajes parcialmente en español mezclados con inglés – por ejemplo:
+
+"No se pudo cargar icono...", "Fallo al monitorear...", "Operation error".
+Esto no rompe el código, pero puede ser inconsistente para usuarios.
+Prompt sugerido:
+
+Recorre todo el archivo optimusprime.py y unifica los mensajes de log y errores a un único idioma (inglés), manteniendo el significado. No cambies la lógica ni la estructura de control, sólo el texto de los logger.*, print, y mensajes de excepción.
+
+Uso redundante de imports dentro de métodos (p. ej. HardwareDetector._detect_cpu y _detect_gpu vuelven a importar subprocess y shutil que ya podrían estar al inicio). No es un bug, sólo ineficiencia.
+
+Prompt sugerido:
+
+En optimusprime.py, mueve los imports locales de subprocess y shutil dentro de los métodos _detect_cpu, _detect_gpu y _detect_storage de HardwareDetector a la cabecera del archivo. Elimina los imports duplicados dentro de funciones, sin cambiar la lógica.
+
+Comentarios de advertencia que pueden inducir a confusión, pero no son errores de lógica: por ejemplo, varias clases confiesan que "no pueden realmente forzar large pages / prefetch / I/O scheduling", lo cual es correcto, pero no rompe nada.
+
+Prompt sugerido:
+
+Revisa los docstrings en optimusprime.py que explican limitaciones (LargePageManager, PrefetchOptimizer, AdvancedTimerCoalescer, etc.) y asegúrate de que los comentarios describan claramente que son best-effort hints y no controles garantizados. No cambies código, sólo texto de docstrings y comentarios.
+
+
+1) UnifiedProcessManager.__init__: uso de propiedades antes de definir los atributos reales
+Dónde (aprox.): en el __init__ de UnifiedProcessManager, hacia el final del constructor, aparece:
+
+Python
+self._registry_buffer = None
+self._ctypes_pool = None
+self.settings_applicator.ctypes_pool = self.ctypes_pool
+Lógicamente funciona (porque las propiedades registry_buffer y ctypes_pool inicializan estos atributos bajo demanda), pero es confuso que se asignen atributos "privados" y luego se llamen propiedades que a su vez los crean. Es más claro inicializar explícitamente:
+
+Prompt sugerido
+En la clase UnifiedProcessManager de optimusprime.py, dentro de __init__, inicializa explícitamente los atributos privados _registry_buffer y _ctypes_pool usando sus clases (RegistryWriteBuffer, CTypesStructurePool) en lugar de depender de las propiedades registry_buffer y ctypes_pool. Luego asigna self.settings_applicator.ctypes_pool = self._ctypes_pool. No cambies otra lógica ni firmas de métodos.
+
+2) MemoryBandwidthManager._start_bandwidth_monitoring: cálculo de uso actual sin límite configurado
+Dónde (aprox.): clase MemoryBandwidthManager, método _start_bandwidth_monitoring.
+
+Se calcula self.current_usage (MB/s) pero no se usa para aplicar ninguna lógica de límite en este método; eso está bien conceptualmente, pero es confuso que exista bandwidth_limit y políticas QoS y no se aplique nada aquí.
+
+No es un bug duro, pero la intención es incomplete.
+
+Prompt sugerido
+En la clase MemoryBandwidthManager de optimusprime.py, añade lógica dentro del hilo monitor_bandwidth para que, cuando self.current_usage supere self.bandwidth_limit (interpretado como porcentaje de un valor de referencia configurable), llames automáticamente a limit_background_bandwidth para todos los procesos de self.background_processes. Mantén la estructura y los nombres actuales, no elimines nada, sólo añade la lógica que conecta el uso actual con el límite.
+
+3) CustomIOScheduler._process_io_request: campo io_requests nunca incrementado
+Dónde (aprox.): clase CustomIOScheduler, método add_syscall y _process_io_request.
+
+Se incrementa self.stats['io_processed'] en _process_io_request, pero self.stats['io_requests'] nunca se incrementa. Esto hace que las métricas de la clase sean engañosas.
+
+Prompt sugerido
+En la clase CustomIOScheduler de optimusprime.py, incrementa self.stats['io_requests'] cada vez que se añade una petición a self.io_queue en add_syscall (justo antes o después de self.io_queue.append((syscall_func, args))). No modifiques otros contadores.
+
+4) MetadataOptimizer: contador cache_hits nunca se usa
+Dónde (aprox.): clase MetadataOptimizer. Se define self.stats = {'optimizations': 0, 'cache_hits': 0}, pero no hay ningún lugar donde cache_hits se incremente. Esto no rompe nada, pero es un “semi‑bug” de métricas.
+
+Prompt sugerido
+En la clase MetadataOptimizer de optimusprime.py, añade un método público get_from_cache(key) que intente devolver self.metadata_cache[key]; si existe, incrementa self.stats['cache_hits'] y devuelve el valor; si no existe, devuelve None. No cambies el resto de la lógica, sólo añade este método y usa cache_hits ahí.
+
+5) Mensajes de log inconsistentes (es/en) y genéricos
+A lo largo de las clases como SystemTrayManager, RealtimePriorityManager, UnifiedProcessManager, etc., se repite el mismo mensaje genérico "Operation error" o "Fallo al X" sin contexto (p. ej. sin PID, sin nombre de servicio). No rompe el código, pero dificulta el debugging.
+
+Prompt sugerido
+Recorre optimusprime.py y mejora los mensajes de log genéricos donde aparece sólo "Operation error" o mensajes muy vagos. Incluye en el log el contexto relevante (por ejemplo PID, nombre de proceso, nombre de servicio, nombre de dispositivo), manteniendo el idioma consistente (inglés) y sin cambiar la lógica de control de flujo.
+
+
+
+1) Contadores de estadísticas definidos pero poco utilizados o nunca incrementados
+En varias clases de esta sección se definen estructuras como:
+
+Python
+self.stats = {'...': 0, ...}
+pero algunos campos no se incrementan en ningún método visible o se usan poco. Ejemplos típicos:
+
+ProcessDependencyAnalyzer.stats['chain_optimizations'] se incrementa en optimize_critical_chain pero puede quedar casi siempre en 0 si nadie llama analyze_and_optimize.
+EnhancedNetworkStackOptimizer.stats tiene varios contadores; hay un buen uso en los métodos, pero es fácil que alguno quede sin uso en casos normales.
+No es un error de lógica, pero sí hace que las métricas sean engañosas.
+
+Prompt sugerido:
+
+En optimusprime.py, revisa todas las clases que definen un diccionario self.stats (por ejemplo ProcessDependencyAnalyzer, EnhancedNetworkStackOptimizer, EnhancedSystemResponsivenessOptimizer, etc.). Para cada clave de self.stats, garantiza que:
+
+Se incremente al menos en un lugar coherente con su nombre.
+Se incluya en los métodos get_stats() o equivalentes. Si encuentras alguna clave que nunca se utiliza, elimina esa clave de self.stats para evitar métricas engañosas. No cambies la lógica funcional, sólo ajusta los contadores y los retornos de estadísticas.
+2) Mensajes de log genéricos y mezcla de idiomas
+Siguen apareciendo muchos logger.warning("Operation error", exc_info=True) y mensajes en español como:
+
+Python
+logger.warning(f"Fallo al optimizar ...", exc_info=True)
+logger.warning("Operation error", exc_info=True)
+Esto no rompe nada, pero dificulta depurar y es inconsistente.
+
+Prompt sugerido:
+
+En optimusprime.py, reemplaza los mensajes de log genéricos "Operation error" y los mensajes en español por mensajes más descriptivos en inglés, incluyendo contexto (PID, nombre de proceso, nombre de servicio, etc.). Ejemplo: en lugar de "Operation error", usa "Error updating tray icon temperature" o "Failed to optimize network stack for PID {pid}". No cambies la lógica de control ni los niveles de log, solo el texto.
+
+3) Uso extensivo de except Exception sin diferenciación
+En este tramo se mantiene el patrón de capturar Exception muy ampliamente, lo cual está bien para un optimizador defensivo, pero oculta errores de lógica si algo se rompe.
+
+Prompt sugerido:
+
+En optimusprime.py, en las secciones entre las líneas 4000 y 6000, revisa los bloques try/except Exception y, cuando sea posible, reemplaza except Exception por excepciones más específicas (psutil.NoSuchProcess, psutil.AccessDenied, subprocess.TimeoutExpired, etc.). Donde mantengas except Exception, añade un mensaje de log que incluya el nombre del método/clase para facilitar el diagnóstico. No modifiques el flujo de control (no elimines try/except), solo refina las excepciones capturadas y los mensajes de log.
+
+4) Limpieza de código muerto / redundante (mínima, pero existente)
+En las clases de esta sección hay métodos que dejan pass o comentarios de “nota” sin implementación real (por ejemplo, algunas ramas en _process_io_request o en métodos de optimización que sólo hacen pass). No es un error, pero aumenta el ruido.
+
+Prompt sugerido:
+
+En optimusprime.py, entre las líneas 4000 y 6000, identifica métodos o ramas de if/elif que solo contienen pass o comentarios sin lógica (por ejemplo, algunas partes de _process_io_request de CustomIOScheduler). Si el código no se usa y no está documentado como "stub" para el futuro, elimínalo. Si debe mantenerse como stub, añade un docstring corto explicando que es un placeholder. No toques métodos claramente utilizados.
+
+
+1) UnifiedProcessManager.run: bloque while True enorme y muy monolítico
+En el método run de UnifiedProcessManager, hay un bucle infinito muy grande con muchas responsabilidades mezcladas: actualizar procesos, gestión térmica, ajustar TCP, TRIM, GC, etc.
+
+No es un bug, pero es muy difícil de mantener y testear.
+
+Prompt sugerido:
+
+En la clase UnifiedProcessManager de optimusprime.py, refactoriza el método run para dividir el cuerpo del bucle principal en métodos privados más pequeños. Por ejemplo:
+
+_run_iteration(iteration_count: int) para una iteración completa,
+_run_low_frequency_tasks(iteration_count: int) para bloques if iteration_count % N == 0,
+_handle_errors_in_main_loop(e: Exception) para el except. Mantén la lógica y el orden de llamadas exactamente igual; solo extrae código en métodos privados con nombres claros y llámalos desde run.
+2) main: mezcla de print y logger para mensajes al usuario
+En main() (hacia el final del archivo) se mezclan print(...) con logger.*. Por ejemplo:
+
+Python
+print('Starting Optimus Prime...')
+...
+print('Process manager created. Starting manager thread...')
+...
+print('Manager thread started. Creating tray...')
+...
+print('Tray created. Running tray...')
+No es un error, pero es inconsistente y dificulta centralizar la salida.
+
+Prompt sugerido:
+
+En la función main de optimusprime.py, reemplaza los print(...) por llamadas al logger (por ejemplo logger.info(...)) para unificar el manejo de salida. Usa mensajes equivalentes y no cambies la lógica ni el orden de las operaciones.
+
+3) main: manejo de elevación con relaunch_with_elevation() poco explícito
+En main():
+
+Python
+elevation_method = relaunch_with_elevation()
+if elevation_method:
+    if elevation_method == 'nsudo':
+        print('Launching elevated instance via NSudo. This session will exit; allow the new window to continue running.')
+    else:
+        print('Elevation requested. Approve the UAC prompt to continue. Closing current session...')
+    return
+Lógicamente está bien, pero es fácil que el usuario no vea el mensaje si la consola se cierra muy rápido, y no hay logging asociado.
+
+Prompt sugerido:
+
+En main de optimusprime.py, además de los print (o los logger.info si ya los unificaste), añade un logger.info explícito cuando relaunch_with_elevation() devuelve 'nsudo' o 'runas', incluyendo el valor de elevation_method. No cambies el flujo de control (se debe seguir haciendo return después del mensaje).
+
+4) UnifiedProcessManager.__del__ indirecto: posibles recursos sin cerrar si el proceso termina abruptamente
+Ya en el final del archivo, confías en __del__ de distintas clases (ProcessHandleCache, AdvancedTimerCoalescer, etc.) para cerrar recursos. Esto no es un bug inmediato, pero es frágil si el intérprete se apaga antes de llamar a los destructores.
+
+Prompt sugerido:
+
+En optimusprime.py, añade un método explícito shutdown() a UnifiedProcessManager que:
+
+Llame a self.handle_cache.close_all(),
+Llame a self.timer_coalescer.cleanup() o _deactivate_high_resolution_timer(),
+Detenga self.ram_monitor_active,
+Cierre cualquier recurso importante adicional. Luego, en main, antes de salir (por ejemplo, al terminar el tray o capturar excepciones no controladas), invoca manager.shutdown(). No elimines los __del__ existentes, solo añade esta vía de apagado ordenado.
