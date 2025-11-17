@@ -7582,6 +7582,190 @@ class UnifiedProcessManager:
     def _set_applied_state(self, pid: int, state: Dict) -> None:
         self.applied_states[pid] = state
 
+    def _apply_base_settings(self, pid: int, is_foreground: bool, cores, desired_prio, desired_io, desired_thread_io, desired_page, desired_disable_boost, use_eco_qos, trim_ws):
+        """Apply base settings like priority, affinity, and I/O priority."""
+        prev = self._get_applied_state(pid)
+        settings_to_apply = {}
+        if prev.get('cores') != cores:
+            settings_to_apply['affinity'] = cores
+        if prev.get('priority') != desired_prio:
+            settings_to_apply['priority'] = desired_prio
+        if prev.get('io') != desired_io:
+            settings_to_apply['io_priority'] = desired_io
+        if prev.get('thread_io') != desired_thread_io:
+            settings_to_apply['thread_io_priority'] = desired_thread_io
+        if prev.get('page') != desired_page:
+            settings_to_apply['page_priority'] = desired_page
+        if prev.get('disable_boost') != desired_disable_boost:
+            settings_to_apply['disable_boost'] = desired_disable_boost
+        if use_eco_qos and not prev.get('eco_qos'):
+            settings_to_apply['eco_qos'] = True
+        if trim_ws and (not is_foreground):
+            try:
+                process = psutil.Process(pid)
+                memory_mb = process.memory_info().rss / (1024 * 1024)
+                self.workingset_optimizer.mark_process_foreground(pid, is_foreground)
+                if self.workingset_optimizer.should_trim_working_set(pid, memory_mb):
+                    settings_to_apply['trim_working_set'] = True
+            except Exception as e:
+                logger.warning("Operation error", exc_info=True)
+        else:
+            self.workingset_optimizer.mark_process_foreground(pid, is_foreground)
+        if settings_to_apply:
+            result = self.settings_applicator.apply_batched_settings(pid, settings_to_apply)
+            if result['success']:
+                new_state = prev.copy()
+                new_state.update({'cores': cores, 'priority': desired_prio, 'io': desired_io, 'thread_io': desired_thread_io, 'page': desired_page, 'disable_boost': desired_disable_boost, 'eco_qos': use_eco_qos})
+                self._set_applied_state(pid, new_state)
+                self.decision_cache.set(pid, 'settings', {'is_foreground': is_foreground, 'timestamp': time.time()})
+                if 'priority' in result['applied']:
+                    self.integrity_validator.validate_priority(pid, desired_prio)
+                if 'affinity' in result['applied']:
+                    self.integrity_validator.validate_affinity(pid, cores)
+
+    def _apply_memory_settings(self, pid: int, is_foreground: bool):
+        """Apply memory-related optimizations."""
+        if is_foreground:
+            try:
+                process = psutil.Process(pid)
+                minimized_time = 0
+                if pid in self.minimized_processes:
+                    minimized_time = time.time() - self.minimized_processes[pid]
+                self.memory_priority_manager.set_memory_priority(pid, MEMORY_PRIORITY_NORMAL, is_foreground, minimized_time)
+                if self.large_page_manager.should_enable_large_pages(pid, is_foreground):
+                    self.large_page_manager.enable_large_pages_for_process(pid)
+                if self.awe_manager.is_32bit_process(pid):
+                    try:
+                        process_mem_mb = process.memory_info().rss / (1024 * 1024)
+                        if process_mem_mb > 1024:
+                            self.awe_manager.enable_awe_for_process(pid)
+                    except Exception as e:
+                        logger.warning("Operation error", exc_info=True)
+                try:
+                    self.numa_allocator.optimize_process_numa(pid, self._get_applied_state(pid).get('cores', []))
+                except Exception as e:
+                    logger.warning(f"Fallo al optimizar NUMA para PID {pid}", exc_info=True)
+                try:
+                    self.huge_pages_manager.monitor_process(pid)
+                except Exception as e:
+                    logger.warning(f"Fallo al monitorear huge pages para PID {pid}", exc_info=True)
+                try:
+                    if len(self.advanced_numa_optimizer.numa_nodes) > 1:
+                        self.advanced_numa_optimizer.optimize_numa_placement(pid)
+                except Exception as e:
+                    logger.warning(f"Fallo al optimizar colocación NUMA avanzada para PID {pid}", exc_info=True)
+                try:
+                    self.memory_bandwidth_manager.prioritize_foreground_memory_access(pid)
+                except Exception as e:
+                    logger.warning(f"Fallo al priorizar ancho de banda de memoria para PID {pid}", exc_info=True)
+            except Exception as e:
+                logger.warning("Operation error", exc_info=True)
+        else:
+            try:
+                minimized_time = 0
+                if pid in self.minimized_processes:
+                    minimized_time = time.time() - self.minimized_processes[pid]
+                self.memory_priority_manager.set_memory_priority(pid, MEMORY_PRIORITY_LOW, is_foreground, minimized_time)
+                self.advanced_ws_trimmer.trim_private_pages(pid)
+                try:
+                    self.memory_dedup_manager.enable_memory_compression(pid)
+                except Exception as e:
+                    logger.warning("Operation error", exc_info=True)
+                try:
+                    self.memory_bandwidth_manager.limit_background_bandwidth(pid)
+                except Exception as e:
+                    logger.warning("Operation error", exc_info=True)
+            except Exception as e:
+                logger.warning("Operation error", exc_info=True)
+
+    def _apply_cpu_settings(self, pid: int, is_foreground: bool, cores):
+        """Apply CPU-related optimizations."""
+        if is_foreground:
+            try:
+                process = psutil.Process(pid)
+                process_name = process.name()
+                num_threads = process.num_threads()
+                if num_threads <= 2:
+                    workload = 'single_thread'
+                    is_latency_sensitive = True
+                elif num_threads <= 8:
+                    workload = 'latency_sensitive'
+                    is_latency_sensitive = True
+                else:
+                    workload = 'throughput'
+                    is_latency_sensitive = False
+                self.cpu_pinning.apply_intelligent_pinning(pid, cores, workload)
+                self.heterogeneous_scheduler.classify_and_schedule_threads(pid, is_latency_sensitive)
+                if is_latency_sensitive:
+                    self.smt_scheduler.assign_to_physical_cores(pid)
+                self.cpu_frequency_scaler.set_turbo_mode(enable=True)
+                try:
+                    self.realtime_priority_mgr.monitor_realtime_process(pid, process_name)
+                except Exception as e:
+                    logger.warning(f"Fallo al monitorear prioridad en tiempo real para PID {pid}", exc_info=True)
+                try:
+                    if self.l3_cache_optimizer.cache_groups:
+                        self.l3_cache_optimizer.optimize_process_cache_locality(pid, is_critical=True, handle_cache=self.handle_cache)
+                except Exception as e:
+                    logger.warning(f"Fallo al optimizar localidad de caché L3 para PID {pid}", exc_info=True)
+                try:
+                    if self.avx_instruction_optimizer.detect_avx_usage(pid, process_name):
+                        self.avx_instruction_optimizer.optimize_avx_process(pid)
+                except Exception as e:
+                    logger.warning(f"Fallo al optimizar instrucciones AVX para PID {pid}", exc_info=True)
+                try:
+                    if num_threads <= 4:
+                        self.enhanced_smt_optimizer.optimize_for_latency(pid, self.handle_cache)
+                    else:
+                        self.enhanced_smt_optimizer.optimize_for_throughput(pid, self.handle_cache)
+                except Exception as e:
+                    logger.warning(f"Fallo al optimizar SMT para PID {pid}", exc_info=True)
+                try:
+                    self.cpu_pipeline_optimizer.optimize_instruction_ordering(pid, is_critical=True)
+                except Exception as e:
+                    logger.warning(f"Fallo al optimizar ordenamiento de instrucciones para PID {pid}", exc_info=True)
+                try:
+                    self.tlb_optimizer.optimize_memory_layout(pid)
+                except Exception as e:
+                    logger.warning(f"Fallo al optimizar diseño de memoria TLB para PID {pid}", exc_info=True)
+                try:
+                    self.cache_coherency_optimizer.optimize_thread_placement(pid, self.handle_cache)
+                except Exception as e:
+                    logger.warning(f"Fallo al optimizar coherencia de caché para PID {pid}", exc_info=True)
+            except Exception as e:
+                logger.error(f"Error crítico al aplicar configuración para proceso en primer plano PID {pid}", exc_info=True)
+        else:
+            try:
+                self.heterogeneous_scheduler.classify_and_schedule_threads(pid, is_latency_sensitive=False)
+            except Exception as e:
+                logger.warning("Operation error", exc_info=True)
+
+    def _apply_io_settings(self, pid: int, is_foreground: bool, desired_io):
+        """Apply I/O-related optimizations."""
+        if is_foreground:
+            try:
+                process = psutil.Process(pid)
+                try:
+                    exe_path = process.exe()
+                    self.prefetch_optimizer.optimize_prefetch_for_process(pid, exe_path)
+                except Exception as e:
+                    logger.warning(f"Fallo al optimizar prefetch para PID {pid}", exc_info=True)
+                try:
+                    self.network_flow_prioritizer.prioritize_foreground_traffic(pid)
+                except Exception as e:
+                    logger.warning(f"Fallo al priorizar tráfico de red para PID {pid}", exc_info=True)
+                try:
+                    self.io_priority_inheritance.inherit_io_priority(pid, desired_io)
+                except Exception as e:
+                    logger.warning(f"Fallo al heredar prioridad IO para PID {pid}", exc_info=True)
+            except Exception as e:
+                logger.warning("Operation error", exc_info=True)
+        else:
+            try:
+                self.io_priority_inheritance.throttle_background_io(pid)
+            except Exception as e:
+                logger.warning("Operation error", exc_info=True)
+
     def apply_all_settings(self, pid: int, is_foreground: bool):
         if self.is_whitelisted(pid) or self.is_blacklisted(pid):
             return
@@ -7607,173 +7791,16 @@ class UnifiedProcessManager:
             except Exception:
                 profile_settings = self.profile_manager.get_profile_settings('Balanced')
             cores, desired_prio, desired_io, desired_thread_io, desired_page, desired_disable_boost, trim_ws, use_eco_qos = self._desired_settings_for_role(is_foreground, pid)
-            prev = self._get_applied_state(pid)
-            settings_to_apply = {}
-            if prev.get('cores') != cores:
-                settings_to_apply['affinity'] = cores
-            if prev.get('priority') != desired_prio:
-                settings_to_apply['priority'] = desired_prio
-            if prev.get('io') != desired_io:
-                settings_to_apply['io_priority'] = desired_io
-            if prev.get('thread_io') != desired_thread_io:
-                settings_to_apply['thread_io_priority'] = desired_thread_io
-            if prev.get('page') != desired_page:
-                settings_to_apply['page_priority'] = desired_page
-            if prev.get('disable_boost') != desired_disable_boost:
-                settings_to_apply['disable_boost'] = desired_disable_boost
-            if use_eco_qos and not prev.get('eco_qos'):
-                settings_to_apply['eco_qos'] = True
-            if trim_ws and (not is_foreground):
-                try:
-                    process = psutil.Process(pid)
-                    memory_mb = process.memory_info().rss / (1024 * 1024)
-                    self.workingset_optimizer.mark_process_foreground(pid, is_foreground)
-                    if self.workingset_optimizer.should_trim_working_set(pid, memory_mb):
-                        settings_to_apply['trim_working_set'] = True
-                except Exception as e:
-                    logger.warning("Operation error", exc_info=True)
-            else:
-                self.workingset_optimizer.mark_process_foreground(pid, is_foreground)
-            if settings_to_apply:
-                result = self.settings_applicator.apply_batched_settings(pid, settings_to_apply)
-                if result['success']:
-                    new_state = prev.copy()
-                    new_state.update({'cores': cores, 'priority': desired_prio, 'io': desired_io, 'thread_io': desired_thread_io, 'page': desired_page, 'disable_boost': desired_disable_boost, 'eco_qos': use_eco_qos})
-                    self._set_applied_state(pid, new_state)
-                    self.decision_cache.set(pid, 'settings', {'is_foreground': is_foreground, 'timestamp': time.time()})
-                    if 'priority' in result['applied']:
-                        self.integrity_validator.validate_priority(pid, desired_prio)
-                    if 'affinity' in result['applied']:
-                        self.integrity_validator.validate_affinity(pid, cores)
+            self._apply_base_settings(pid, is_foreground, cores, desired_prio, desired_io, desired_thread_io, desired_page, desired_disable_boost, use_eco_qos, trim_ws)
             try:
                 self.telemetry_collector.collect_metrics()
                 if not self.telemetry_collector.should_throttle():
                     self.dynamic_priority_algo.adjust_priority(pid, is_foreground)
             except Exception as e:
                 logger.warning("Operation error", exc_info=True)
-            if is_foreground:
-                try:
-                    process = psutil.Process(pid)
-                    process_name = process.name()
-                    num_threads = process.num_threads()
-                    if num_threads <= 2:
-                        workload = 'single_thread'
-                        is_latency_sensitive = True
-                    elif num_threads <= 8:
-                        workload = 'latency_sensitive'
-                        is_latency_sensitive = True
-                    else:
-                        workload = 'throughput'
-                        is_latency_sensitive = False
-                    self.cpu_pinning.apply_intelligent_pinning(pid, cores, workload)
-                    self.heterogeneous_scheduler.classify_and_schedule_threads(pid, is_latency_sensitive)
-                    if is_latency_sensitive:
-                        self.smt_scheduler.assign_to_physical_cores(pid)
-                    self.cpu_frequency_scaler.set_turbo_mode(enable=True)
-                    if self.large_page_manager.should_enable_large_pages(pid, is_foreground):
-                        self.large_page_manager.enable_large_pages_for_process(pid)
-                    if self.awe_manager.is_32bit_process(pid):
-                        try:
-                            process_mem_mb = process.memory_info().rss / (1024 * 1024)
-                            if process_mem_mb > 1024:
-                                self.awe_manager.enable_awe_for_process(pid)
-                        except Exception as e:
-                            logger.warning("Operation error", exc_info=True)
-                    minimized_time = 0
-                    if pid in self.minimized_processes:
-                        minimized_time = time.time() - self.minimized_processes[pid]
-                    self.memory_priority_manager.set_memory_priority(pid, MEMORY_PRIORITY_NORMAL, is_foreground, minimized_time)
-                    try:
-                        exe_path = process.exe()
-                        self.prefetch_optimizer.optimize_prefetch_for_process(pid, exe_path)
-                    except Exception as e:
-                        logger.warning(f"Fallo al optimizar prefetch para PID {pid}", exc_info=True)
-                    try:
-                        self.numa_allocator.optimize_process_numa(pid, cores)
-                    except Exception as e:
-                        logger.warning(f"Fallo al optimizar NUMA para PID {pid}", exc_info=True)
-                    try:
-                        self.huge_pages_manager.monitor_process(pid)
-                    except Exception as e:
-                        logger.warning(f"Fallo al monitorear huge pages para PID {pid}", exc_info=True)
-                    try:
-                        self.realtime_priority_mgr.monitor_realtime_process(pid, process_name)
-                    except Exception as e:
-                        logger.warning(f"Fallo al monitorear prioridad en tiempo real para PID {pid}", exc_info=True)
-                    try:
-                        self.network_flow_prioritizer.prioritize_foreground_traffic(pid)
-                    except Exception as e:
-                        logger.warning(f"Fallo al priorizar tráfico de red para PID {pid}", exc_info=True)
-                    try:
-                        process = psutil.Process(pid)
-                        process_name = process.name()
-                        if self.l3_cache_optimizer.cache_groups:
-                            self.l3_cache_optimizer.optimize_process_cache_locality(pid, is_critical=True, handle_cache=self.handle_cache)
-                    except Exception as e:
-                        logger.warning(f"Fallo al optimizar localidad de caché L3 para PID {pid}", exc_info=True)
-                    try:
-                        process = psutil.Process(pid)
-                        process_name = process.name()
-                        if self.avx_instruction_optimizer.detect_avx_usage(pid, process_name):
-                            self.avx_instruction_optimizer.optimize_avx_process(pid)
-                    except Exception as e:
-                        logger.warning(f"Fallo al optimizar instrucciones AVX para PID {pid}", exc_info=True)
-                    try:
-                        if num_threads <= 4:
-                            self.enhanced_smt_optimizer.optimize_for_latency(pid, self.handle_cache)
-                        else:
-                            self.enhanced_smt_optimizer.optimize_for_throughput(pid, self.handle_cache)
-                    except Exception as e:
-                        logger.warning(f"Fallo al optimizar SMT para PID {pid}", exc_info=True)
-                    try:
-                        self.cpu_pipeline_optimizer.optimize_instruction_ordering(pid, is_critical=True)
-                    except Exception as e:
-                        logger.warning(f"Fallo al optimizar ordenamiento de instrucciones para PID {pid}", exc_info=True)
-                    try:
-                        self.tlb_optimizer.optimize_memory_layout(pid)
-                    except Exception as e:
-                        logger.warning(f"Fallo al optimizar diseño de memoria TLB para PID {pid}", exc_info=True)
-                    try:
-                        if len(self.advanced_numa_optimizer.numa_nodes) > 1:
-                            self.advanced_numa_optimizer.optimize_numa_placement(pid)
-                    except Exception as e:
-                        logger.warning(f"Fallo al optimizar colocación NUMA avanzada para PID {pid}", exc_info=True)
-                    try:
-                        self.cache_coherency_optimizer.optimize_thread_placement(pid, self.handle_cache)
-                    except Exception as e:
-                        logger.warning(f"Fallo al optimizar coherencia de caché para PID {pid}", exc_info=True)
-                    try:
-                        self.memory_bandwidth_manager.prioritize_foreground_memory_access(pid)
-                    except Exception as e:
-                        logger.warning(f"Fallo al priorizar ancho de banda de memoria para PID {pid}", exc_info=True)
-                    try:
-                        self.io_priority_inheritance.inherit_io_priority(pid, desired_io)
-                    except Exception as e:
-                        logger.warning(f"Fallo al heredar prioridad IO para PID {pid}", exc_info=True)
-                except Exception as e:
-                    logger.error(f"Error crítico al aplicar configuración para proceso en primer plano PID {pid}", exc_info=True)
-            else:
-                try:
-                    minimized_time = 0
-                    if pid in self.minimized_processes:
-                        minimized_time = time.time() - self.minimized_processes[pid]
-                    self.memory_priority_manager.set_memory_priority(pid, MEMORY_PRIORITY_LOW, is_foreground, minimized_time)
-                    self.advanced_ws_trimmer.trim_private_pages(pid)
-                    self.heterogeneous_scheduler.classify_and_schedule_threads(pid, is_latency_sensitive=False)
-                    try:
-                        self.memory_dedup_manager.enable_memory_compression(pid)
-                    except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
-                    try:
-                        self.memory_bandwidth_manager.limit_background_bandwidth(pid)
-                    except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
-                    try:
-                        self.io_priority_inheritance.throttle_background_io(pid)
-                    except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
-                except Exception as e:
-                    logger.warning("Operation error", exc_info=True)
+            self._apply_cpu_settings(pid, is_foreground, cores)
+            self._apply_memory_settings(pid, is_foreground)
+            self._apply_io_settings(pid, is_foreground, desired_io)
         finally:
             if gc_was_enabled:
                 gc.enable()
