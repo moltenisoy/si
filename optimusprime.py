@@ -5,6 +5,7 @@ import ctypes
 import json
 import os
 import subprocess
+import shutil
 import threading
 import gc
 import heapq
@@ -504,8 +505,6 @@ class HardwareDetector:
 
     def _detect_cpu(self):
         try:
-            import subprocess
-            import shutil
             wmic_cmd = shutil.which(WMIC_COMMAND_PATH)
             if not wmic_cmd:
                 wmic_cmd = os.path.join(os.environ.get('SystemRoot', 'C:\\Windows'), 'System32', 'wmic.exe')
@@ -535,8 +534,6 @@ class HardwareDetector:
 
     def _detect_gpu(self):
         try:
-            import subprocess
-            import shutil
             wmic_cmd = shutil.which(WMIC_COMMAND_PATH)
             if not wmic_cmd:
                 wmic_cmd = os.path.join(os.environ.get('SystemRoot', 'C:\\Windows'), 'System32', 'wmic.exe')
@@ -563,8 +560,6 @@ class HardwareDetector:
 
     def _detect_storage(self):
         try:
-            import subprocess
-            import shutil
             wmic_cmd = shutil.which(WMIC_COMMAND_PATH)
             if not wmic_cmd:
                 wmic_cmd = os.path.join(os.environ.get('SystemRoot', 'C:\\Windows'), 'System32', 'wmic.exe')
@@ -4164,7 +4159,7 @@ class RealtimePriorityManager:
                             data['glitch_count'] = max(0, data['glitch_count'] - 1)
                         data['last_cpu_time'] = current_cpu_time
             except Exception as e:
-                logger.warning(f"Fallo al monitorear proceso en tiempo real PID {pid} ({process_name})", exc_info=True)
+                logger.warning(f"Failed to monitor realtime process PID {pid} ({process_name})", exc_info=True)
 
     def _boost_priority(self, pid):
         with self.lock:
@@ -4175,7 +4170,7 @@ class RealtimePriorityManager:
                     self.stats['adjustments'] += 1
                     return True
             except Exception as e:
-                logger.warning(f"Fallo al aumentar prioridad para PID {pid}", exc_info=True)
+                logger.warning(f"Failed to boost priority for PID {pid}", exc_info=True)
             return False
 
 class SystemTrayManager:
@@ -4200,7 +4195,7 @@ class SystemTrayManager:
             if os.path.exists(icon_path):
                 return Image.open(icon_path)
         except Exception as e:
-            logger.warning(f"No se pudo cargar icono desde {icon_path}", exc_info=True)
+            logger.warning(f"Failed to load icon from {icon_path}", exc_info=True)
         return None
 
     def create_icon_image(self, text='OP', size=64, bg_color=(0, 120, 215), text_color=(255, 255, 255)):
@@ -4211,7 +4206,7 @@ class SystemTrayManager:
         try:
             font = ImageFont.truetype('arial.ttf', int(size * 0.5))
         except Exception as e:
-            logger.debug(f"No se pudo cargar fuente arial.ttf, usando fuente por defecto: {e}")
+            logger.debug(f"Failed to load arial.ttf font, using default font: {e}")
             font = ImageFont.load_default()
         bbox = draw.textbbox((0, 0), text, font=font)
         text_width = bbox[2] - bbox[0]
@@ -4258,7 +4253,7 @@ class SystemTrayManager:
                     self.temp_icon.icon = new_image
                     self.temp_icon.title = f'CPU: {int(temp)}°C'
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning(f"Failed to update temperature icon", exc_info=True)
 
     def toggle_temp_display(self, icon, item):
         self.show_temp_icon = not self.show_temp_icon
@@ -4284,7 +4279,7 @@ class SystemTrayManager:
             try:
                 subprocess.run(['powercfg', '/setactive', HIGH_PERFORMANCE_POWER_PLAN_GUID], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=5)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             services_to_suspend = ['DiagTrack', 'WSearch', 'SysMain', 'TabletInputService', 'XblAuthManager', 'XblGameSave', 'XboxGipSvc', 'XboxNetApiSvc', 'MapsBroker', 'OneSyncSvc', 'WerSvc', 'wuauserv']
             for service_name in services_to_suspend:
                 try:
@@ -4297,15 +4292,15 @@ class SystemTrayManager:
                 subprocess.run(['powercfg', '/setacvalueindex', 'SCHEME_CURRENT', 'SUB_PROCESSOR', 'CPMINCORES', '100'], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
                 subprocess.run(['powercfg', '/setactive', 'SCHEME_CURRENT'], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             try:
                 self.manager.trim_scheduler.set_gaming_mode(True)
                 self.manager.ncq_optimizer.set_queue_depth_for_gaming(True)
                 self.manager.network_polling.enable_polling_mode(True)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
     def _deactivate_game_mode(self):
         if not self.manager:
@@ -4316,20 +4311,20 @@ class SystemTrayManager:
                 try:
                     subprocess.run(['net', 'start', service_name], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=5)
                 except Exception as e:
-                    logger.warning("Operation error", exc_info=True)
+                    logger.warning("Error during operation", exc_info=True)
             try:
                 subprocess.run(['powercfg', '/setacvalueindex', 'SCHEME_CURRENT', 'SUB_PROCESSOR', 'CPMINCORES', '0'], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
                 subprocess.run(['powercfg', '/setactive', 'SCHEME_CURRENT'], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             try:
                 self.manager.trim_scheduler.set_gaming_mode(False)
                 self.manager.ncq_optimizer.set_queue_depth_for_gaming(False)
                 self.manager.network_polling.enable_polling_mode(False)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
     def increase_temp_threshold(self, icon, item):
         self.temp_monitor.increase_max_temp()
@@ -4358,7 +4353,7 @@ class SystemTrayManager:
                 self._enable_autostart()
             self.is_autostart_enabled = not self.is_autostart_enabled
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
     def _enable_autostart(self):
         try:
@@ -4372,7 +4367,7 @@ class SystemTrayManager:
             winreg.SetValueEx(key, 'GEMINAZO', 0, winreg.REG_SZ, startup_command)
             winreg.CloseKey(key)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
     def _disable_autostart(self):
         try:
@@ -4383,14 +4378,14 @@ class SystemTrayManager:
                 pass
             winreg.CloseKey(key)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
     def exit_application(self, icon, item):
         try:
             if self.manager and hasattr(self.manager, 'registry_buffer'):
                 self.manager.registry_buffer.flush()
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
         self._revert_all_settings()
         self.running = False
         if self.temp_icon:
@@ -4407,22 +4402,22 @@ class SystemTrayManager:
                 try:
                     self.manager.context_switch_reducer.adjust_quantum_time_slice(increase=False, registry_buffer=self.manager.registry_buffer)
                 except Exception as e:
-                    logger.warning("Operation error", exc_info=True)
+                    logger.warning("Error during operation", exc_info=True)
                 try:
                     self.manager.cpu_frequency_scaler.set_turbo_mode(enable=False)
                 except Exception as e:
-                    logger.warning("Operation error", exc_info=True)
+                    logger.warning("Error during operation", exc_info=True)
                 try:
                     services_to_restore = ['WSearch', 'SysMain', 'wuauserv']
                     for service_name in services_to_restore:
                         try:
                             subprocess.run(['net', 'start', service_name], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=5)
                         except Exception as e:
-                            logger.warning("Operation error", exc_info=True)
+                            logger.warning("Error during operation", exc_info=True)
                 except Exception as e:
-                    logger.warning("Operation error", exc_info=True)
+                    logger.warning("Error during operation", exc_info=True)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
     def open_gui(self, icon, item):
         if not GUI_AVAILABLE or ProcessManagerGUI is None:
@@ -4468,10 +4463,10 @@ class SystemTrayManager:
                     try:
                         self.temp_icon.run()
                     except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
+                        logger.warning("Error during operation", exc_info=True)
                 threading.Thread(target=run_temp_icon, daemon=True).start()
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
     def run(self):
         if pystray is None or Image is None:
@@ -4508,7 +4503,7 @@ class SystemTrayManager:
                         if self.icon:
                             self.icon.menu = self.create_menu()
                     except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
+                        logger.warning("Error during operation", exc_info=True)
             threading.Thread(target=update_loop, daemon=True).start()
             self.icon.run()
         except Exception:
@@ -4607,7 +4602,7 @@ def enable_debug_privilege():
             try:
                 kernel32.CloseHandle(h_token)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
 
 def set_process_affinity_direct(handle, core_list):
     try:
@@ -4685,7 +4680,7 @@ def set_page_priority_for_pid(pid, page_priority):
             try:
                 kernel32.CloseHandle(h_process)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
 
 def set_priority_boost(pid, disable_boost):
     h_process = None
@@ -4712,7 +4707,7 @@ def set_priority_boost(pid, disable_boost):
             try:
                 win32api.CloseHandle(h_process)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
 
 def load_config():
     try:
@@ -4762,7 +4757,7 @@ class L3CacheOptimizer:
                             cache_id = i
                             cache_groups[cache_id].update(cores)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
         return cache_groups
 
     def optimize_process_cache_locality(self, pid, is_critical=False, handle_cache=None):
@@ -4788,7 +4783,7 @@ class L3CacheOptimizer:
                                 self.stats['optimizations'] += 1
                                 return True
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             return False
 
     def detect_cache_contention(self, pid_list):
@@ -4799,7 +4794,7 @@ class L3CacheOptimizer:
                     if len(processes_in_group) > len(cores) / 2:
                         return (True, cache_id, processes_in_group)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             return (False, None, [])
 
 class EnhancedCacheTopologyOptimizer:
@@ -5023,7 +5018,7 @@ class AVXInstructionOptimizer:
                     self.stats['avx_detected'] += 1
                     return True
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             return False
 
     def optimize_avx_process(self, pid):
@@ -5043,10 +5038,10 @@ class AVXInstructionOptimizer:
                             try:
                                 win32process.SetPriorityClass(handle, win32process.ABOVE_NORMAL_PRIORITY_CLASS)
                             except Exception as e:
-                                logger.warning("Operation error", exc_info=True)
+                                logger.warning("Error during operation", exc_info=True)
                             return True
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             return False
 
 class EnhancedSMTOptimizer:
@@ -5075,7 +5070,7 @@ class EnhancedSMTOptimizer:
                 for i in range(physical_count):
                     pairs[i] = [i, i + physical_count]
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
         return pairs
 
     def optimize_for_latency(self, pid, handle_cache):
@@ -5092,7 +5087,7 @@ class EnhancedSMTOptimizer:
                         self.stats['smt_disabled'] += 1
                         return True
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             return False
 
     def optimize_for_throughput(self, pid, handle_cache):
@@ -5107,7 +5102,7 @@ class EnhancedSMTOptimizer:
                         self.stats['smt_enabled'] += 1
                         return True
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             return False
 
 class CPUPipelineOptimizer:
@@ -5128,11 +5123,11 @@ class CPUPipelineOptimizer:
                     try:
                         win32process.SetPriorityClass(handle, win32process.HIGH_PRIORITY_CLASS)
                     except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
+                        logger.warning("Error during operation", exc_info=True)
                     self.stats['optimizations'] += 1
                     return True
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             return False
 
 class TSCSynchronizer:
@@ -5153,7 +5148,7 @@ class TSCSynchronizer:
                         self.stats['sync_success'] += 1
                         return True
                 except Exception as e:
-                    logger.warning("Operation error", exc_info=True)
+                    logger.warning("Error during operation", exc_info=True)
                 try:
                     result = subprocess.run(['bcdedit', '/enum', '{current}'], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=5)
                     if result.returncode == 0:
@@ -5164,9 +5159,9 @@ class TSCSynchronizer:
                         self.stats['sync_success'] += 1
                         return True
                 except Exception as e:
-                    logger.warning("Operation error", exc_info=True)
+                    logger.warning("Error during operation", exc_info=True)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             return False
 
 class TLBOptimizer:
@@ -5194,7 +5189,7 @@ class TLBOptimizer:
                         self.stats['optimizations'] += 1
                         return True
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             return False
 
     def optimize_memory_layout(self, pid):
@@ -5205,7 +5200,7 @@ class TLBOptimizer:
                 if mem_info.rss > 512 * 1024 * 1024:
                     return self.enable_large_pages(pid)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             return False
 
 class AdvancedNUMAOptimizer:
@@ -5225,7 +5220,7 @@ class AdvancedNUMAOptimizer:
                 if kernel32.GetNumaProcessorNode(cpu, ctypes.byref(node_number)):
                     nodes[node_number.value].append(cpu)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
         return nodes.copy()
 
     def optimize_numa_placement(self, pid):
@@ -5244,7 +5239,7 @@ class AdvancedNUMAOptimizer:
                         self.stats['optimizations'] += 1
                         return True
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             return False
 
     def migrate_memory_between_nodes(self, pid, target_node):
@@ -5257,7 +5252,7 @@ class AdvancedNUMAOptimizer:
                         self.stats['migrations'] += 1
                         return True
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             return False
 
 class MemoryScrubbingOptimizer:
@@ -5288,7 +5283,7 @@ class MemoryScrubbingOptimizer:
             mem = psutil.virtual_memory()
             self.memory_regions = self._partition_memory(mem.total)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
     def _partition_memory(self, total_memory):
         regions = []
@@ -5316,7 +5311,7 @@ class MemoryScrubbingOptimizer:
                             self._scrub_region(region)
                         time.sleep(self.scrubbing_interval)
                     except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
+                        logger.warning("Error during operation", exc_info=True)
             
             self.scrubbing_thread = threading.Thread(target=scrub_memory, daemon=True, name='MemoryScrubber')
             self.scrubbing_thread.start()
@@ -5341,7 +5336,7 @@ class MemoryScrubbingOptimizer:
                 region['last_scrub'] = current_time
                 self.stats['regions_scrubbed'] += 1
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
     def get_metrics(self):
         with self.lock:
@@ -5367,9 +5362,9 @@ class MemoryScrubbingOptimizer:
                         self.stats['scrubbing_optimizations'] += 1
                         return True
                     except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
+                        logger.warning("Error during operation", exc_info=True)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             return False
 
 class CacheCoherencyOptimizer:
@@ -5406,7 +5401,7 @@ class CacheCoherencyOptimizer:
                 elif self.coherency_protocol == "MOESI":
                     self._init_moesi_protocol()
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
 
     def _init_mesi_protocol(self):
         self.cache_lines = {
@@ -5459,7 +5454,7 @@ class CacheCoherencyOptimizer:
                     pattern['last_rss'] = mem_info.rss
                     pattern['timestamp'] = time.time()
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             return False
 
     def optimize_thread_placement(self, pid, handle_cache):
@@ -5522,7 +5517,7 @@ class CacheCoherencyOptimizer:
                         self.stats['optimizations'] += 1
                         return True
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             return False
 
 class MemoryBandwidthManager:
@@ -5605,6 +5600,13 @@ class MemoryBandwidthManager:
                             write_bandwidth = (total_write - last_write) / time_delta / (1024 * 1024)
                             # Total memory bandwidth is read + write
                             self.current_usage = read_bandwidth + write_bandwidth
+                            
+                            if self.current_usage > self.bandwidth_limit:
+                                for pid in list(self.background_processes):
+                                    try:
+                                        self.limit_background_bandwidth(pid)
+                                    except Exception:
+                                        pass
                         
                         last_read = total_read
                         last_write = total_write
@@ -5612,7 +5614,7 @@ class MemoryBandwidthManager:
                     
                     time.sleep(5)
                 except Exception as e:
-                    logger.warning("Operation error", exc_info=True)
+                    logger.warning("Error during operation", exc_info=True)
         
         self.monitoring_thread = threading.Thread(target=monitor_bandwidth, daemon=True, name='BandwidthMonitor')
         self.monitoring_thread.start()
@@ -5646,7 +5648,7 @@ class MemoryBandwidthManager:
                         self.stats['priority_adjustments'] += 1
                         return True
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             return False
 
     def limit_background_bandwidth(self, pid):
@@ -5663,7 +5665,7 @@ class MemoryBandwidthManager:
                         self.stats['priority_adjustments'] += 1
                         return True
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             return False
 
 class IntelligentTRIMScheduler:
@@ -5730,7 +5732,7 @@ class IntelligentTRIMScheduler:
                 self.last_trim = time.time()
                 
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
 
     def set_gaming_mode(self, enabled):
         with self.lock:
@@ -5777,7 +5779,7 @@ class AggressiveWriteCache:
                         self._flush_dirty_pages()
                         time.sleep(5)
                     except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
+                        logger.warning("Error during operation", exc_info=True)
             
             self.flush_daemon = threading.Thread(target=flush_periodically, daemon=True, name='CacheFlusher')
             self.flush_daemon.start()
@@ -5794,7 +5796,7 @@ class AggressiveWriteCache:
                 self.cache_data.clear()
                 self.stats['flushes'] += 1
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
     def get_hit_ratio(self):
         with self.lock:
@@ -5820,7 +5822,7 @@ class AggressiveWriteCache:
             winreg.SetValueEx(key, 'IoPageLockLimit', 0, winreg.REG_DWORD, self.write_buffer_size)
             winreg.CloseKey(key)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
 class CustomIOScheduler:
 
@@ -5865,7 +5867,7 @@ class CustomIOScheduler:
                             self._process_io_request(request)
                         time.sleep(0.001)
                     except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
+                        logger.warning("Error during operation", exc_info=True)
             
             self.scheduler_thread = threading.Thread(target=schedule_io, daemon=True, name='IOScheduler')
             self.scheduler_thread.start()
@@ -5874,6 +5876,11 @@ class CustomIOScheduler:
         with self.lock:
             self.enabled = False
             self.scheduler_thread = None
+
+    def add_syscall(self, syscall_func, args):
+        with self.lock:
+            self.io_queue.append((syscall_func, args))
+            self.stats['io_requests'] += 1
 
     def _process_io_request(self, request):
         """Process an I/O request based on the configured scheduling algorithm.
@@ -5904,7 +5911,7 @@ class CustomIOScheduler:
             
             self.stats['io_processed'] += 1
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
     def get_queue_status(self):
         with self.lock:
@@ -5930,7 +5937,7 @@ class CustomIOScheduler:
             winreg.SetValueEx(key, 'TimeOutValue', 0, winreg.REG_DWORD, 10)
             winreg.CloseKey(key)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
 class NCQOptimizer:
 
@@ -5950,7 +5957,7 @@ class NCQOptimizer:
                 winreg.SetValueEx(key, 'QueueDepth', 0, winreg.REG_DWORD, depth)
                 winreg.CloseKey(key)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
 
 class AdvancedFileSystemCache:
 
@@ -5965,7 +5972,7 @@ class AdvancedFileSystemCache:
             winreg.SetValueEx(key, 'LargeSystemCache', 0, winreg.REG_DWORD, 0)
             winreg.CloseKey(key)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
 class IOPriorityInheritance:
 
@@ -6031,7 +6038,7 @@ class IOPriorityInheritance:
                     self.io_priorities[pid] = priority
                     return True
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             return False
 
     def throttle_background_io(self, pid):
@@ -6046,7 +6053,7 @@ class IOPriorityInheritance:
                     NtSetInformationProcess(handle, ProcessPowerThrottling, ctypes.byref(throttle), ctypes.sizeof(throttle))
                     return True
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             return False
 
 class AdaptiveIOScheduler:
@@ -6128,7 +6135,7 @@ class AdaptiveIOScheduler:
                         winreg.SetValueEx(key, 'QueueDepth', 0, winreg.REG_DWORD, new_queue_depth)
                         winreg.CloseKey(key)
                     except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
+                        logger.warning("Error during operation", exc_info=True)
                     return True
             except Exception as e:
                 logger.debug(f'NVMe queue depth adjustment error: {e}')
@@ -6157,7 +6164,7 @@ class AdaptiveIOScheduler:
                         logger.debug(f'I/O priority for pid {pid} set to {io_priority}')
                         return True
                     except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
+                        logger.warning("Error during operation", exc_info=True)
             except Exception as e:
                 logger.debug(f'I/O prioritization error for pid {pid}: {e}')
             return False
@@ -6232,7 +6239,7 @@ class MetadataOptimizer:
                         self._update_indexes()
                         time.sleep(10)
                     except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
+                        logger.warning("Error during operation", exc_info=True)
             
             self.optimization_engine = threading.Thread(target=optimize_metadata, daemon=True, name='MetadataOptimizer')
             self.optimization_engine.start()
@@ -6267,20 +6274,27 @@ class MetadataOptimizer:
             
             self.stats['optimizations'] += 1
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
     def _compact_metadata(self):
         try:
             if len(self.metadata_cache) > 1000:
                 self.metadata_cache = dict(list(self.metadata_cache.items())[-500:])
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
     def _update_indexes(self):
         try:
             pass
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
+
+    def get_from_cache(self, key):
+        with self.lock:
+            if key in self.metadata_cache:
+                self.stats['cache_hits'] += 1
+                return self.metadata_cache[key]
+            return None
 
     def get_optimization_count(self):
         with self.lock:
@@ -6304,7 +6318,7 @@ class MetadataOptimizer:
             winreg.SetValueEx(key, 'NtfsDisable8dot3NameCreation', 0, winreg.REG_DWORD, 1)
             winreg.CloseKey(key)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
 class TCPFastOpenOptimizer:
 
@@ -6319,7 +6333,7 @@ class TCPFastOpenOptimizer:
             winreg.SetValueEx(key, 'TcpMaxDataRetransmissions', 0, winreg.REG_DWORD, 3)
             winreg.CloseKey(key)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
 class DynamicNetworkBufferTuner:
 
@@ -6369,7 +6383,7 @@ class BBRCongestionControl:
             winreg.SetValueEx(key, 'TcpAckFrequency', 0, winreg.REG_DWORD, 2)
             winreg.CloseKey(key)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
 class NetworkPollingOptimizer:
 
@@ -6386,7 +6400,7 @@ class NetworkPollingOptimizer:
                 winreg.SetValueEx(key, 'DisableTaskOffload', 0, winreg.REG_DWORD, 1 if gaming_mode else 0)
                 winreg.CloseKey(key)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
 
 class AggressiveDNSCache:
 
@@ -6402,7 +6416,7 @@ class AggressiveDNSCache:
             winreg.SetValueEx(key, 'MaxNegativeCacheTtl', 0, winreg.REG_DWORD, DNS_NEGATIVE_CACHE_TTL_1_HOUR)
             winreg.CloseKey(key)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
 class GPUSchedulingOptimizer:
 
@@ -6416,7 +6430,7 @@ class GPUSchedulingOptimizer:
             winreg.SetValueEx(key, 'HwSchMode', 0, winreg.REG_DWORD, HARDWARE_SCHEDULING_MODE_2)
             winreg.CloseKey(key)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
 class PCIeBandwidthOptimizer:
 
@@ -6430,7 +6444,7 @@ class PCIeBandwidthOptimizer:
             winreg.SetValueEx(key, 'ASPMOptOut', 0, winreg.REG_DWORD, 1)
             winreg.CloseKey(key)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
 class DirectXVulkanOptimizer:
 
@@ -6444,7 +6458,7 @@ class DirectXVulkanOptimizer:
             winreg.SetValueEx(key, 'DisableDebugLayer', 0, winreg.REG_DWORD, 1)
             winreg.CloseKey(key)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
 class ProcessDependencyAnalyzer:
 
@@ -6560,7 +6574,7 @@ class ProcessDependencyAnalyzer:
                                 priority = PRIORITY_CLASSES['NORMAL']
                             win32process.SetPriorityClass(int(handle), priority)
                     except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
+                        logger.warning("Error during operation", exc_info=True)
                 chain_cores = list(range(min(8, psutil.cpu_count(logical=True))))
                 affinity_mask = sum((1 << core for core in chain_cores))
                 for pid in chain:
@@ -6569,7 +6583,7 @@ class ProcessDependencyAnalyzer:
                         if handle:
                             kernel32.SetProcessAffinityMask(handle, ULONG_PTR(affinity_mask))
                     except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
+                        logger.warning("Error during operation", exc_info=True)
                 self.stats['chain_optimizations'] += 1
                 logger.info(f'Critical chain optimized: {len(chain)} processes')
                 return True
@@ -6628,7 +6642,7 @@ class EnhancedNetworkStackOptimizer:
                                 else:
                                     latencies.append(elapsed)
                     except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
+                        logger.warning("Error during operation", exc_info=True)
                 if latencies:
                     avg_latency = sum(latencies) / len(latencies)
                     self.current_latency_ms = avg_latency
@@ -6708,7 +6722,7 @@ class EnhancedNetworkStackOptimizer:
                         logger.info(f'NIC interrupt coalescing: {interrupt_moderation} ({coalesce_usec}μs)')
                         return True
                 except Exception as e:
-                    logger.warning("Operation error", exc_info=True)
+                    logger.warning("Error during operation", exc_info=True)
             except Exception as e:
                 logger.debug(f'Interrupt coalescing error: {e}')
             return False
@@ -6794,7 +6808,7 @@ class EnhancedSystemResponsivenessOptimizer:
                         logger.debug(f'Priority boost applied to PID {pid} for {duration_sec}s')
                         return True
                     except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
+                        logger.warning("Error during operation", exc_info=True)
             except Exception as e:
                 logger.debug(f'Priority boost error for PID {pid}: {e}')
             return False
@@ -6811,7 +6825,7 @@ class EnhancedSystemResponsivenessOptimizer:
                             if handle:
                                 win32process.SetPriorityClass(int(handle), boost_data['original_priority'])
                         except Exception as e:
-                            logger.warning("Operation error", exc_info=True)
+                            logger.warning("Error during operation", exc_info=True)
                         expired.append(pid)
                 for pid in expired:
                     del self.boosted_processes[pid]
@@ -6954,9 +6968,9 @@ class UnifiedProcessManager:
         self.integrity_validator = IntegrityValidator(self.handle_cache)
         self.suspension_manager = ProcessSuspensionManager()
         self.responsiveness_controller = SystemResponsivenessController()
-        self._registry_buffer = None
-        self._ctypes_pool = None
-        self.settings_applicator.ctypes_pool = self.ctypes_pool
+        self._registry_buffer = RegistryWriteBuffer(flush_interval=15.0)
+        self._ctypes_pool = CTypesStructurePool(max_pool_size=20)
+        self.settings_applicator.ctypes_pool = self._ctypes_pool
         self.load_whitelist()
         self.ram_monitor_active = True
         self.last_ram_cleanup = 0
@@ -6986,22 +7000,22 @@ class UnifiedProcessManager:
             self.network_optimizer.configure_rss()
             self.network_optimizer.disable_network_throttling()
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
         try:
             self.power_optimizer.disable_pcie_aspm()
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
         try:
             self.kernel_optimizer.optimize_timer_resolution()
             self.kernel_optimizer.increase_paged_pool_size()
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
         try:
             if self._tsc_synchronizer is None:
                 self._tsc_synchronizer = TSCSynchronizer()
             self._tsc_synchronizer.synchronize_tsc()
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
         try:
             if self._write_cache_optimizer is None:
                 self._write_cache_optimizer = AggressiveWriteCache()
@@ -7046,36 +7060,36 @@ class UnifiedProcessManager:
                 self._dx_vulkan_optimizer = DirectXVulkanOptimizer()
             self._dx_vulkan_optimizer.optimize_rendering_performance()
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
         try:
             self.memory_scrubbing_optimizer.enable()
             self.memory_scrubbing_optimizer.set_scrubbing_interval(60)
             self.memory_scrubbing_optimizer.start_background_scrubbing()
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
         try:
             self.cache_coherency_optimizer.enable()
             self.cache_coherency_optimizer.set_coherency_protocol('MESI')
             self.cache_coherency_optimizer.initialize_cache_lines()
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
         try:
             self.memory_bandwidth_manager.enable()
             self.memory_bandwidth_manager.set_bandwidth_limit(80)
             self.memory_bandwidth_manager.configure_qos_policies()
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
         try:
             self.io_priority_inheritance.enable()
             self.io_priority_inheritance.set_priority_levels(5)
             self.io_priority_inheritance.enable_priority_boosting()
             self.io_priority_inheritance.configure_inheritance_chain()
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
         try:
             self.responsiveness_controller.set_for_performance()
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
         try:
             if self.hardware_detector.is_amd_cpu():
                 self.cpu_parking_controller.disable_cpu_parking()
@@ -7084,7 +7098,7 @@ class UnifiedProcessManager:
                     self._ncq_optimizer = NCQOptimizer()
                 self._ncq_optimizer.set_queue_depth_for_gaming(False)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
     def manage_thermal_throttling(self):
         if self.temp_monitor.is_overheating():
@@ -7103,10 +7117,10 @@ class UnifiedProcessManager:
                                 throttling_state.StateMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED
                                 kernel32.SetProcessInformation(handle, ProcessPowerThrottling, ctypes.byref(throttling_state), ctypes.sizeof(throttling_state))
                         except Exception as e:
-                            logger.warning("Operation error", exc_info=True)
+                            logger.warning("Error during operation", exc_info=True)
                 self.cpu_frequency_scaler.set_turbo_mode(enable=False)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
 
     def _register_coalesced_tasks(self):
         self.timer_coalescer.register_task('whitelist_reload', interval_ms=10000, priority=3)
@@ -7129,7 +7143,7 @@ class UnifiedProcessManager:
                     topology = {'llc_groups': [set(g) for g in cached_data.get('llc_groups', [])], 'numa_nodes': defaultdict(set, {int(k): set(v) for k, v in cached_data.get('numa_nodes', {}).items()}), 'p_cores': set(cached_data.get('p_cores', [])), 'e_cores': set(cached_data.get('e_cores', []))}
                     return topology
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
         topology = {'llc_groups': [], 'numa_nodes': defaultdict(set), 'p_cores': set(), 'e_cores': set()}
         try:
             returned_length = wintypes.DWORD(0)
@@ -7153,7 +7167,7 @@ class UnifiedProcessManager:
                                     topology['e_cores'].update(cpus)
                         offset += entry.Size
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
         if not topology['p_cores'] and (not topology['e_cores']):
             try:
                 returned_length = wintypes.DWORD(0)
@@ -7182,7 +7196,7 @@ class UnifiedProcessManager:
                         cpus = self._mask_to_cpu_indices(mask, cpu_index_map)
                         topology['numa_nodes'][node_id].update(cpus)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
         if not topology['llc_groups']:
             topology['llc_groups'] = [set(range(self.cpu_count))]
         try:
@@ -7190,7 +7204,7 @@ class UnifiedProcessManager:
             with open(topology_cache_path, 'w') as f:
                 json.dump(cache_data, f)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
         return topology
 
     def _build_cpu_index_map(self):
@@ -7219,7 +7233,7 @@ class UnifiedProcessManager:
                     p_cores = set(sorted(largest))
                     e_cores = set(range(self.cpu_count)) - p_cores
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
         if not p_cores:
             p_cores = set(range(self.cpu_count))
             e_cores = set()
@@ -7253,7 +7267,7 @@ class UnifiedProcessManager:
                                 self.whitelist.add(item['name'].lower())
                     self.config_last_modified = current_modified
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
     @property
     def l3_cache_optimizer(self):
@@ -7505,7 +7519,7 @@ class UnifiedProcessManager:
                         if pid:
                             self._on_foreground_changed(pid)
                 except Exception as e:
-                    logger.warning("Operation error", exc_info=True)
+                    logger.warning("Error during operation", exc_info=True)
             try:
                 self.win_event_hook = user32.SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, 0, callback, 0, 0, WINEVENT_OUTOFCONTEXT)
                 msg = wintypes.MSG()
@@ -7608,7 +7622,7 @@ class UnifiedProcessManager:
                 if self.workingset_optimizer.should_trim_working_set(pid, memory_mb):
                     settings_to_apply['trim_working_set'] = True
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
         else:
             self.workingset_optimizer.mark_process_foreground(pid, is_foreground)
         if settings_to_apply:
@@ -7640,7 +7654,7 @@ class UnifiedProcessManager:
                         if process_mem_mb > 1024:
                             self.awe_manager.enable_awe_for_process(pid)
                     except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
+                        logger.warning("Error during operation", exc_info=True)
                 try:
                     self.numa_allocator.optimize_process_numa(pid, self._get_applied_state(pid).get('cores', []))
                 except Exception as e:
@@ -7659,7 +7673,7 @@ class UnifiedProcessManager:
                 except Exception as e:
                     logger.warning(f"Fallo al priorizar ancho de banda de memoria para PID {pid}", exc_info=True)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
         else:
             try:
                 minimized_time = 0
@@ -7670,13 +7684,13 @@ class UnifiedProcessManager:
                 try:
                     self.memory_dedup_manager.enable_memory_compression(pid)
                 except Exception as e:
-                    logger.warning("Operation error", exc_info=True)
+                    logger.warning("Error during operation", exc_info=True)
                 try:
                     self.memory_bandwidth_manager.limit_background_bandwidth(pid)
                 except Exception as e:
-                    logger.warning("Operation error", exc_info=True)
+                    logger.warning("Error during operation", exc_info=True)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
 
     def _apply_cpu_settings(self, pid: int, is_foreground: bool, cores):
         """Apply CPU-related optimizations."""
@@ -7738,7 +7752,7 @@ class UnifiedProcessManager:
             try:
                 self.heterogeneous_scheduler.classify_and_schedule_threads(pid, is_latency_sensitive=False)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
 
     def _apply_io_settings(self, pid: int, is_foreground: bool, desired_io):
         """Apply I/O-related optimizations."""
@@ -7759,12 +7773,12 @@ class UnifiedProcessManager:
                 except Exception as e:
                     logger.warning(f"Fallo al heredar prioridad IO para PID {pid}", exc_info=True)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
         else:
             try:
                 self.io_priority_inheritance.throttle_background_io(pid)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
 
     def apply_all_settings(self, pid: int, is_foreground: bool):
         if self.is_whitelisted(pid) or self.is_blacklisted(pid):
@@ -7797,7 +7811,7 @@ class UnifiedProcessManager:
                 if not self.telemetry_collector.should_throttle():
                     self.dynamic_priority_algo.adjust_priority(pid, is_foreground)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             self._apply_cpu_settings(pid, is_foreground, cores)
             self._apply_memory_settings(pid, is_foreground)
             self._apply_io_settings(pid, is_foreground, desired_io)
@@ -7846,10 +7860,10 @@ class UnifiedProcessManager:
                             finally:
                                 win32api.CloseHandle(handle)
                     except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
+                        logger.warning("Error during operation", exc_info=True)
                 self.apply_all_settings(target_pid, is_foreground)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
     def _get_job_key(self, pid):
         try:
@@ -7888,10 +7902,10 @@ class UnifiedProcessManager:
                         data = {'ControlFlags': JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP, 'CpuRate': cpu_rate * 100}
                         win32job.SetInformationJobObject(job_info['handle'], win32job.JobObjectCpuRateControlInformation, data)
                     except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
+                        logger.warning("Error during operation", exc_info=True)
                 job_info['is_foreground'] = is_foreground
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
         return job_info['handle']
 
     def _assign_pid_to_job(self, pid, job_handle):
@@ -7903,11 +7917,11 @@ class UnifiedProcessManager:
                 win32job.AssignProcessToJobObject(job_handle, hProc)
                 self.pid_to_job[pid] = job_handle
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             finally:
                 win32api.CloseHandle(hProc)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
     def get_ram_usage_percent(self):
         try:
@@ -7991,7 +8005,7 @@ class UnifiedProcessManager:
             self.ram_monitor_thread = threading.Thread(target=self.ram_monitor_worker, daemon=True, name='RamMonitorThread')
             self.ram_monitor_thread.start()
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
     def get_foreground_window_pid(self):
         try:
@@ -8000,7 +8014,7 @@ class UnifiedProcessManager:
                 _, pid = win32process.GetWindowThreadProcessId(hwnd)
                 return pid
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
         return None
 
     def clean_zombie_processes(self):
@@ -8018,7 +8032,7 @@ class UnifiedProcessManager:
                 self.pid_to_job.pop(pid, None)
                 self.decision_cache.invalidate(pid)
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
 
     def _check_and_suspend_inactive_processes(self):
         current_time = time.time()
@@ -8032,7 +8046,7 @@ class UnifiedProcessManager:
                         if psutil.pid_exists(pid):
                             self.suspension_manager.suspend_process(pid)
                     except Exception as e:
-                        logger.warning("Operation error", exc_info=True)
+                        logger.warning("Error during operation", exc_info=True)
 
     def update_all_processes(self):
         ready_tasks = self.timer_coalescer.get_tasks_to_execute()
@@ -8061,7 +8075,7 @@ class UnifiedProcessManager:
                 elif task_name == 'process_suspension_check':
                     self._check_and_suspend_inactive_processes()
             except Exception as e:
-                logger.warning("Operation error", exc_info=True)
+                logger.warning("Error during operation", exc_info=True)
             end_time = time.perf_counter()
             execution_time_ms = (end_time - start_time) * 1000
             self.timer_coalescer.mark_executed(task_name, execution_time_ms)
@@ -8081,7 +8095,7 @@ class UnifiedProcessManager:
                         self.applied_states.pop(pid, None)
                         self.pid_to_job.pop(pid, None)
         except Exception as e:
-            logger.warning("Operation error", exc_info=True)
+            logger.warning("Error during operation", exc_info=True)
 
     def run(self):
         try:
@@ -8156,31 +8170,31 @@ class UnifiedProcessManager:
             self.temp_monitor.cleanup()
 
 def main() -> None:
-    print('Starting Optimus Prime...')
+    logger.info('Starting Optimus Prime...')
     debug_enabled = enable_debug_privilege()
     if debug_enabled:
-        print('Debug privilege enabled.')
+        logger.info('Debug privilege enabled.')
     else:
         elevation_method = relaunch_with_elevation()
         if elevation_method:
             if elevation_method == 'nsudo':
-                print('Launching elevated instance via NSudo. This session will exit; allow the new window to continue running.')
+                logger.info('Launching elevated instance via NSudo. This session will exit; allow the new window to continue running.')
             else:
-                print('Elevation requested. Approve the UAC prompt to continue. Closing current session...')
+                logger.info('Elevation requested. Approve the UAC prompt to continue. Closing current session...')
             return
         warning_message = 'WARNING: SeDebugPrivilege unavailable. Running with limited functionality; some optimizations may fail. For full access, rerun this script from an elevated PowerShell window or place NSudo.exe next to the script.'
-        print(warning_message)
+        logger.warning(warning_message)
         if not is_user_admin():
             logger.warning('SeDebugPrivilege unavailable; continuing without elevation.')
         else:
             logger.warning('SeDebugPrivilege unavailable even with administrative context; proceeding in limited mode.')
     manager = UnifiedProcessManager(debug_privilege_enabled=debug_enabled)
-    print('Process manager created. Starting manager thread...')
+    logger.info('Process manager created. Starting manager thread...')
     manager_thread = threading.Thread(target=manager.run, daemon=True, name='ProcessManager')
     manager_thread.start()
-    print('Manager thread started. Creating tray...')
+    logger.info('Manager thread started. Creating tray...')
     tray = SystemTrayManager(manager, manager.temp_monitor)
-    print('Tray created. Running tray...')
+    logger.info('Tray created. Running tray...')
     tray.run()
 if __name__ == '__main__':
     main()
