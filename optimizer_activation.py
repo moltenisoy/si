@@ -1,5 +1,15 @@
 # Activación funcional de las clases de optimización
 
+from optimusprime import (
+    MemoryScrubbingOptimizer,
+    CacheCoherencyOptimizer,
+    MemoryBandwidthManager,
+    AggressiveWriteCache,
+    CustomIOScheduler,
+    IOPriorityInheritance,
+    MetadataOptimizer
+)
+
 class SystemOptimizationManager:
     """Gestor principal para coordinar todos los optimizadores"""
     
