@@ -219,7 +219,6 @@ class BY_HANDLE_FILE_INFORMATION(ctypes.Structure):
     _fields_ = [('dwFileAttributes', wintypes.DWORD), ('ftCreationTime', FILETIME), ('ftLastAccessTime', FILETIME), ('ftLastWriteTime', FILETIME), ('dwVolumeSerialNumber', wintypes.DWORD), ('nFileSizeHigh', wintypes.DWORD), ('nFileSizeLow', wintypes.DWORD), ('nNumberOfLinks', wintypes.DWORD), ('nFileIndexHigh', wintypes.DWORD), ('nFileIndexLow', wintypes.DWORD)]
 
 class SYSTEM_CACHE_INFORMATION(ctypes.Structure):
-    """Structure for getting system cache information including standby memory."""
     _fields_ = [
         ('CurrentSize', ctypes.c_size_t),
         ('PeakSize', ctypes.c_size_t),
@@ -464,14 +463,12 @@ def memoize_with_ttl(ttl_seconds=300):
                 result = func(*args, **kwargs)
                 cache[key] = result
                 cache_times[key] = current_time
-                # Use efficient O(N) pruning instead of O(N log N) sorted
                 if len(cache) > 1000:
                     cutoff_time = current_time - ttl_seconds
                     expired_keys = [k for k, t in cache_times.items() if t < cutoff_time]
                     for old_key in expired_keys:
                         del cache[old_key]
                         del cache_times[old_key]
-                    # If still too large, remove oldest 50% by simple iteration
                     if len(cache) > 1000:
                         items_to_remove = len(cache) // 2
                         keys_to_remove = list(cache_times.keys())[:items_to_remove]
@@ -483,13 +480,6 @@ def memoize_with_ttl(ttl_seconds=300):
     return decorator
 
 class HardwareDetector:
-    """Detects hardware configuration using WMIC.
-    
-    NOTE: WMIC is deprecated in Windows 10/11 and may be removed in future versions.
-    Consider migrating to PowerShell (Get-WmiObject/Get-CimInstance) or pywin32 WMI
-    in the future. Current implementation has robust fallback handling for when WMIC
-    is unavailable.
-    """
 
     def __init__(self):
         self.cpu_vendor = None
@@ -633,15 +623,12 @@ class OptimizationDecisionCache:
                 return
             key = (pid, decision_type)
             self.cache[key] = {'value': value, 'timestamp': time.time()}
-            # Use efficient O(N) pruning instead of O(N log N) sorted
             if len(self.cache) > MAX_CACHE_SIZE:
                 current_time = time.time()
-                # First, remove expired entries
                 expired_keys = [k for k, v in self.cache.items() if current_time - v['timestamp'] >= self.ttl]
                 for old_key in expired_keys:
                     del self.cache[old_key]
                 
-                # If still too large, remove oldest entries by simple iteration
                 if len(self.cache) > MAX_CACHE_SIZE:
                     keys_to_remove = list(self.cache.keys())[:CACHE_CLEANUP_SIZE]
                     for old_key in keys_to_remove:
@@ -756,7 +743,6 @@ class ProcessSuspensionManager:
             time_inactive = time.time() - last_foreground_time
             result = time_inactive > self.inactivity_threshold
             self.suspension_decision_cache[cache_key] = result
-            # Use efficient O(N) pruning - just keep the last 500 items without sorting
             if len(self.suspension_decision_cache) > 1000:
                 keys_to_keep = list(self.suspension_decision_cache.keys())[-500:]
                 self.suspension_decision_cache = {k: self.suspension_decision_cache[k] for k in keys_to_keep}
@@ -944,11 +930,9 @@ class AdvancedTimerCoalescer:
             return self.stats.copy()
     
     def cleanup(self):
-        """Clean up timer resources. Should be called before destroying the object."""
         self._deactivate_high_resolution_timer()
     
     def __del__(self):
-        """Destructor to ensure timer resolution is restored."""
         try:
             self._deactivate_high_resolution_timer()
         except Exception:
@@ -1248,7 +1232,6 @@ class ProcessSnapshotEngine:
                     if pid <= 0:
                         continue
                     name = pe32.szExeFile
-                    # Include all processes, not just .exe files (e.g., "System", "Registry")
                     if name:
                         name = sys.intern(name)
                         processes[pid] = {'pid': pid, 'name': name, 'parent_pid': pe32.th32ParentProcessID, 'threads': pe32.cntThreads, 'priority_base': pe32.pcPriClassBase}
@@ -1278,13 +1261,6 @@ class ProcessSnapshotEngine:
             return self.stats.copy()
 
 class BatchedSettingsApplicator:
-    """Batches settings operations to reduce syscalls by reusing process handles.
-    
-    The 'syscalls_saved' statistic represents the number of OpenProcess calls saved
-    by reusing a single handle for multiple operations. Without batching, each operation
-    would require opening and closing the process handle separately. This class opens
-    the handle once and performs multiple operations, reducing the total syscalls.
-    """
 
     def __init__(self, handle_cache, ctypes_pool=None):
         self.handle_cache = handle_cache
@@ -2020,16 +1996,6 @@ class CPUPinningEngine:
             return self.stats.copy()
 
 class LargePageManager:
-    """Manages large page allocation tracking for processes.
-    
-    LIMITATION: This class cannot actually force external processes to use large pages.
-    Large pages must be requested by the target process itself at memory allocation time
-    using VirtualAlloc with MEM_LARGE_PAGES flag. An external process like this optimizer
-    cannot retroactively enable large pages for already-running processes.
-    
-    The SeLockMemoryPrivilege enabled here applies to THIS process, not target processes.
-    This class primarily tracks which processes might benefit from large pages.
-    """
 
     def __init__(self, handle_cache):
         self.handle_cache = handle_cache
@@ -2096,16 +2062,6 @@ class LargePageManager:
             return self.stats.copy()
 
 class AdvancedWorkingSetTrimmer:
-    """Trims process working sets to free memory.
-    
-    NOTE: Both trim_private_pages() and trim_mapped_files() call the same underlying
-    function _trim_working_set(). SetProcessWorkingSetSize(-1, -1) instructs Windows
-    to trim the entire working set - it does NOT distinguish between private pages
-    and mapped files. The separate methods exist for API compatibility and statistics
-    tracking, but functionally they are identical.
-    
-    For actual working set trimming, WorkingSetOptimizer class should be preferred.
-    """
 
     def __init__(self, handle_cache):
         self.handle_cache = handle_cache
@@ -2123,7 +2079,6 @@ class AdvancedWorkingSetTrimmer:
             return False
 
     def trim_private_pages(self, pid):
-        """Trim working set (affects both private and mapped pages)."""
         with self.lock:
             if self._trim_working_set(pid):
                 self.stats['private_page_trims'] += 1
@@ -2131,7 +2086,6 @@ class AdvancedWorkingSetTrimmer:
             return False
 
     def trim_mapped_files(self, pid):
-        """Trim working set (affects both private and mapped pages)."""
         with self.lock:
             if self._trim_working_set(pid):
                 self.stats['mapped_file_trims'] += 1
@@ -2152,10 +2106,8 @@ class PrefetchOptimizer:
 
     def is_mechanical_disk(self):
         try:
-            # Use HardwareDetector if available for accurate SSD/NVMe detection
             if self.hardware_detector:
                 return not (self.hardware_detector.has_ssd() or self.hardware_detector.has_nvme())
-            # Fallback: assume fixed drives might be mechanical (conservative approach)
             drives = [f'{d}:\\' for d in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' if os.path.exists(f'{d}:\\')]
             for drive in drives:
                 try:
@@ -2194,16 +2146,6 @@ class PrefetchOptimizer:
             return False
 
     def optimize_prefetch_for_process(self, pid, exe_path):
-        """Attempt to trigger prefetch optimization for a process executable.
-        
-        LIMITATION: Simply opening and closing a file handle to the executable is unlikely
-        to meaningfully influence Windows' Prefetch/Superfetch (SysMain) behavior. These
-        are complex OS-level services that analyze actual execution patterns over time.
-        
-        This method is a best-effort approach with minimal expected impact. True prefetch
-        optimization happens automatically through Windows' built-in telemetry and cannot
-        be directly controlled by external processes.
-        """
         with self.lock:
             if not self.should_optimize_prefetch():
                 return False
@@ -2295,15 +2237,7 @@ class ProcessServiceManager:
             self.database = {}
 
     def get_process_config(self, process_name):
-        """Get process configuration from database.
-        
-        Supports both English and Spanish JSON keys for backward compatibility:
-        - 'processes' or 'procesos' for main section
-        - 'system_processes' or 'procesos_sistema' for system processes
-        - 'common_third_party' or 'terceros_comunes' for third-party processes
-        """
         try:
-            # Support both English and Spanish keys for backward compatibility
             processes_section = self.database.get('processes') or self.database.get('procesos', {})
             system_procs = processes_section.get('system_processes') or processes_section.get('procesos_sistema', [])
             for proc in system_procs:
@@ -2343,21 +2277,12 @@ class ProcessServiceManager:
             return self.stats.copy()
 
 class CPUParkingController:
-    """Controls CPU parking globally via power plan settings.
-    
-    Note: CPU parking cannot be controlled per-core via powercfg. The CPMINCORES setting
-    is a global minimum for the entire system, not per-core.
-    """
 
     def __init__(self):
         self.lock = threading.RLock()
         self.stats = {'total_parking_changes': 0, 'disabled_count': 0, 'enabled_count': 0}
 
     def disable_cpu_parking(self):
-        """Disable CPU parking globally for all cores (not per-core).
-        
-        Note: CPMINCORES is a global power plan setting, not per-core.
-        """
         with self.lock:
             try:
                 result = subprocess.run(['powercfg', '/setacvalueindex', 'SCHEME_CURRENT', 'SUB_PROCESSOR', 'CPMINCORES', '100'], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -2370,10 +2295,6 @@ class CPUParkingController:
                 return False
 
     def enable_cpu_parking(self):
-        """Enable CPU parking globally for all cores (not per-core).
-        
-        Note: CPMINCORES is a global power plan setting, not per-core.
-        """
         with self.lock:
             try:
                 result = subprocess.run(['powercfg', '/setacvalueindex', 'SCHEME_CURRENT', 'SUB_PROCESSOR', 'CPMINCORES', '0'], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -3003,9 +2924,6 @@ class KernelOptimizer:
 
     def optimize_timer_resolution(self):
         with self.lock:
-            # Timer resolution optimization is now handled by AdvancedTimerCoalescer
-            # and AdaptiveTimerResolutionManager classes. This method is kept for
-            # backward compatibility but no longer modifies system settings directly.
             return True
 
     def increase_paged_pool_size(self):
@@ -4962,19 +4880,9 @@ class AVXInstructionOptimizer:
         self.stats = {'avx_detected': 0, 'optimizations': 0}
 
     def _detect_avx_cores(self):
-        """Detect AVX-capable cores by checking CPU features, not just CPU name.
-        
-        This checks for AVX/AVX2 support through CPUID instruction via platform module.
-        On modern CPUs, if AVX is supported, it's typically supported on all cores.
-        """
         try:
-            # Check for AVX support using platform information
-            # On Windows, all cores typically have the same feature set
             import platform
             
-            # Try to detect AVX through processor flags
-            # Note: Python's platform module doesn't directly expose CPUID flags on Windows
-            # We'll use a PowerShell command to check CPU features
             result = subprocess.run(
                 ['powershell', '-Command', 
                  '(Get-WmiObject Win32_Processor).Description; ' +
@@ -4987,8 +4895,6 @@ class AVXInstructionOptimizer:
             
             if result.returncode == 0:
                 output = result.stdout.lower()
-                # Modern Intel (Core i3/i5/i7/i9 from Sandy Bridge onwards) and AMD (Ryzen, Bulldozer onwards)
-                # support AVX. Check for these indicators.
                 has_avx = any([
                     'intel' in output and any(x in output for x in ['core i', 'xeon', 'core(tm) i']),
                     'amd' in output and any(x in output for x in ['ryzen', 'threadripper', 'epyc']),
@@ -5004,7 +4910,6 @@ class AVXInstructionOptimizer:
         except Exception as e:
             logger.warning(f"Operation error detecting AVX", exc_info=True)
         
-        # Default: assume all cores are capable
         return list(range(self.cpu_count))
 
     def detect_avx_usage(self, pid, process_name):
@@ -5322,17 +5227,10 @@ class MemoryScrubbingOptimizer:
             self.scrubbing_thread = None
 
     def _scrub_region(self, region):
-        """Scrub a memory region by triggering garbage collection.
-        
-        Note: This is a best-effort approach. True memory scrubbing at the hardware
-        level requires low-level access that Python cannot provide. This implementation
-        triggers Python's garbage collector and attempts to clear memory caches.
-        """
         try:
             current_time = time.time()
             if current_time - region.get('last_scrub', 0) >= self.scrubbing_interval:
-                # Trigger garbage collection to clean up unused memory
-                gc.collect(generation=2)  # Full collection
+                gc.collect(generation=2)
                 region['last_scrub'] = current_time
                 self.stats['regions_scrubbed'] += 1
         except Exception as e:
@@ -5458,30 +5356,19 @@ class CacheCoherencyOptimizer:
             return False
 
     def optimize_thread_placement(self, pid, handle_cache):
-        """Optimize thread placement to reduce cache coherency issues.
-        
-        When false sharing is detected, this attempts to spread threads across
-        different cache domains to reduce coherency traffic. This is done by
-        setting thread affinity to different physical cores.
-        """
         with self.lock:
             try:
                 if self.detect_false_sharing(pid):
                     handle = handle_cache.get_handle(pid, PROCESS_SET_INFORMATION | PROCESS_QUERY_INFORMATION)
                     if handle:
-                        # Disable priority boost to stabilize thread scheduling
                         kernel32.SetProcessPriorityBoost(handle, wintypes.BOOL(False))
                         
-                        # Attempt to spread threads across physical cores
-                        # Get process threads and assign them to different cores
                         try:
                             proc = psutil.Process(pid)
                             threads = proc.threads()
                             
-                            # Get physical core count
                             physical_cores = psutil.cpu_count(logical=False)
                             
-                            # Open each thread and set affinity to separate physical cores
                             snapshot_handle = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)
                             if snapshot_handle != -1:
                                 te32 = THREADENTRY32()
@@ -5491,7 +5378,6 @@ class CacheCoherencyOptimizer:
                                     thread_index = 0
                                     while True:
                                         if te32.th32OwnerProcessID == pid:
-                                            # Assign thread to a physical core (avoid HT siblings)
                                             core = thread_index % physical_cores
                                             affinity_mask = 1 << core
                                             
@@ -5557,12 +5443,6 @@ class MemoryBandwidthManager:
             }
 
     def _start_bandwidth_monitoring(self):
-        """Monitor actual memory bandwidth (MB/s) instead of memory usage (%).
-        
-        Memory bandwidth is calculated by measuring the rate of memory operations
-        over time. This provides a more accurate picture of memory subsystem load
-        than simple usage percentage.
-        """
         if self.monitoring_thread is not None:
             return
         
@@ -5577,12 +5457,10 @@ class MemoryBandwidthManager:
                     time_delta = current_time - last_time
                     
                     if time_delta > 0:
-                        # Get process memory counters to estimate bandwidth
                         total_read = 0
                         total_write = 0
                         
                         try:
-                            # Sum memory operations across all processes
                             for proc in psutil.process_iter(['io_counters']):
                                 try:
                                     io = proc.info.get('io_counters')
@@ -5594,11 +5472,9 @@ class MemoryBandwidthManager:
                         except Exception:
                             pass
                         
-                        # Calculate bandwidth in MB/s
                         if last_read > 0 and last_write > 0:
                             read_bandwidth = (total_read - last_read) / time_delta / (1024 * 1024)
                             write_bandwidth = (total_write - last_write) / time_delta / (1024 * 1024)
-                            # Total memory bandwidth is read + write
                             self.current_usage = read_bandwidth + write_bandwidth
                             
                             if self.current_usage > self.bandwidth_limit:
@@ -5691,14 +5567,8 @@ class IntelligentTRIMScheduler:
             return False
 
     def execute_trim(self):
-        """Execute TRIM on all SSD drives, not just C:.
-        
-        This detects all fixed drives and executes TRIM on those that are SSDs.
-        TRIM is only beneficial for SSDs, not HDDs.
-        """
         if self.should_execute_trim():
             try:
-                # Detect all fixed drives
                 import string
                 from ctypes import windll
                 
@@ -5708,16 +5578,13 @@ class IntelligentTRIMScheduler:
                     if bitmask & 1:
                         drive_path = f'{letter}:\\'
                         drive_type = windll.kernel32.GetDriveTypeW(drive_path)
-                        # DRIVE_FIXED = 3
                         if drive_type == 3:
                             drives.append(f'{letter}:')
                     bitmask >>= 1
                 
-                # Execute TRIM on each drive
                 for drive in drives:
                     try:
                         logger.info(f'Executing TRIM on drive {drive}')
-                        # Use /L flag for TRIM on SSDs
                         subprocess.run(
                             ['defrag', '/L', drive],
                             capture_output=True,
@@ -5883,31 +5750,19 @@ class CustomIOScheduler:
             self.stats['io_requests'] += 1
 
     def _process_io_request(self, request):
-        """Process an I/O request based on the configured scheduling algorithm.
-        
-        Note: This is a simplified implementation. True I/O scheduling happens at
-        the kernel level. This method applies basic priority-based ordering.
-        """
         try:
-            # Extract request properties
             request_type = request.get('type', 'unknown')
             priority = request.get('priority', 1)
             
-            # Apply algorithm-specific handling
             if self.scheduling_algorithm == 'deadline':
-                # Deadline scheduler prioritizes requests with earliest deadlines
                 deadline = request.get('deadline', time.time() + 1.0)
-                # Process based on deadline urgency
                 pass
             elif self.scheduling_algorithm == 'cfq':
-                # Completely Fair Queuing - balance between processes
                 process_id = request.get('pid', 0)
                 pass
             elif self.scheduling_algorithm == 'bfq':
-                # Budget Fair Queuing - consider bandwidth requirements
                 bandwidth = request.get('bandwidth', 1)
                 pass
-            # 'noop' does no special processing
             
             self.stats['io_processed'] += 1
         except Exception as e:
@@ -6245,14 +6100,7 @@ class MetadataOptimizer:
             self.optimization_engine.start()
 
     def _optimize_metadata_structures(self):
-        """Optimize metadata structures by cleaning up stale entries.
-        
-        Note: This operates on internal Python data structures. True filesystem
-        metadata optimization happens at the OS level through defragmentation
-        and other system tools.
-        """
         try:
-            # Clean up stale directory cache entries
             if self.dir_cache:
                 current_time = time.time()
                 stale_keys = [k for k, v in self.dir_cache.items() 
@@ -6260,7 +6108,6 @@ class MetadataOptimizer:
                 for key in stale_keys:
                     del self.dir_cache[key]
             
-            # Clean up metadata cache based on optimization level
             max_cache_size = {
                 'normal': 1000,
                 'aggressive': 500,
@@ -6343,11 +6190,6 @@ class DynamicNetworkBufferTuner:
         self.buffer_size = 65535
 
     def adjust_buffers_by_latency(self, latency_ms):
-        """Adjust network buffer sizes based on latency.
-        
-        For low latency connections, smaller buffers reduce bufferbloat.
-        For high latency connections, larger buffers improve throughput.
-        """
         with self.lock:
             self.current_latency = latency_ms
             if latency_ms < 20:
@@ -6357,13 +6199,10 @@ class DynamicNetworkBufferTuner:
             else:
                 self.buffer_size = 131072
             
-            # Apply buffer size to Windows TCP parameters
             try:
                 key_path = 'SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters'
                 key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE)
-                # Set TCP window size based on calculated buffer
                 winreg.SetValueEx(key, 'TcpWindowSize', 0, winreg.REG_DWORD, self.buffer_size)
-                # Set global max TCP window size
                 winreg.SetValueEx(key, 'GlobalMaxTcpWindowSize', 0, winreg.REG_DWORD, self.buffer_size * 4)
                 winreg.CloseKey(key)
                 logger.debug(f'Applied network buffer size: {self.buffer_size} bytes for latency {latency_ms}ms')
@@ -7597,7 +7436,6 @@ class UnifiedProcessManager:
         self.applied_states[pid] = state
 
     def _apply_base_settings(self, pid: int, is_foreground: bool, cores, desired_prio, desired_io, desired_thread_io, desired_page, desired_disable_boost, use_eco_qos, trim_ws):
-        """Apply base settings like priority, affinity, and I/O priority."""
         prev = self._get_applied_state(pid)
         settings_to_apply = {}
         if prev.get('cores') != cores:
@@ -7638,7 +7476,6 @@ class UnifiedProcessManager:
                     self.integrity_validator.validate_affinity(pid, cores)
 
     def _apply_memory_settings(self, pid: int, is_foreground: bool):
-        """Apply memory-related optimizations."""
         if is_foreground:
             try:
                 process = psutil.Process(pid)
@@ -7693,7 +7530,6 @@ class UnifiedProcessManager:
                 logger.warning("Error during operation", exc_info=True)
 
     def _apply_cpu_settings(self, pid: int, is_foreground: bool, cores):
-        """Apply CPU-related optimizations."""
         if is_foreground:
             try:
                 process = psutil.Process(pid)
@@ -7755,7 +7591,6 @@ class UnifiedProcessManager:
                 logger.warning("Error during operation", exc_info=True)
 
     def _apply_io_settings(self, pid: int, is_foreground: bool, desired_io):
-        """Apply I/O-related optimizations."""
         if is_foreground:
             try:
                 process = psutil.Process(pid)
@@ -7931,12 +7766,6 @@ class UnifiedProcessManager:
             return 0
 
     def get_standby_memory_percent(self):
-        """Get the actual standby memory percentage using Windows API.
-        
-        Standby memory is memory that is cached but available for reuse.
-        This uses NtQuerySystemInformation to get the system file cache size,
-        which represents standby/cached memory more accurately than psutil.cached.
-        """
         try:
             cache_info = SYSTEM_CACHE_INFORMATION()
             return_length = wintypes.DWORD()
@@ -7948,20 +7777,17 @@ class UnifiedProcessManager:
                 ctypes.byref(return_length)
             )
             
-            if result == 0:  # STATUS_SUCCESS
+            if result == 0:
                 vm = psutil.virtual_memory()
                 standby_mb = cache_info.CurrentSize / (1024 * 1024)
                 total_mb = vm.total / (1024 * 1024)
                 return standby_mb / total_mb * 100 if total_mb > 0 else 0
             else:
-                # Fallback to psutil if API call fails
                 logger.debug(f'NtQuerySystemInformation failed with code {result}, falling back to psutil')
                 vm = psutil.virtual_memory()
-                # Use available memory as a rough estimate
                 available_mb = vm.available / (1024 * 1024)
                 used_mb = (vm.total - vm.available) / (1024 * 1024)
                 total_mb = vm.total / (1024 * 1024)
-                # Estimate standby as available minus free
                 free_mb = vm.free / (1024 * 1024)
                 standby_estimate_mb = max(0, available_mb - free_mb)
                 return standby_estimate_mb / total_mb * 100 if total_mb > 0 else 0
@@ -8097,6 +7923,77 @@ class UnifiedProcessManager:
         except Exception as e:
             logger.warning("Error during operation", exc_info=True)
 
+    def _run_iteration(self, iteration_count: int):
+        self.update_all_processes()
+        if self.temp_monitor.monitoring_active:
+            self.manage_thermal_throttling()
+        self._run_low_frequency_tasks(iteration_count)
+
+    def _run_low_frequency_tasks(self, iteration_count: int):
+        if iteration_count % 10 == 0:
+            try:
+                self.adaptive_polling_mgr.adjust_polling_mode()
+            except Exception as e:
+                logger.warning(f"Failed to adjust adaptive polling mode", exc_info=True)
+        if iteration_count % 20 == 0:
+            try:
+                self.disk_cache_tuner.tune_cache()
+            except Exception as e:
+                logger.warning(f"Failed to tune disk cache", exc_info=True)
+            try:
+                self.multilevel_timer_coalescer.execute_due_tasks()
+            except Exception as e:
+                logger.warning(f"Failed to execute timer coalescer tasks", exc_info=True)
+        if iteration_count % 30 == 0:
+            try:
+                self.tcp_congestion_tuner.detect_and_tune()
+            except Exception as e:
+                logger.warning(f"Failed to detect and tune TCP congestion", exc_info=True)
+        if iteration_count % 50 == 0:
+            try:
+                self.memory_scrubbing_optimizer.schedule_scrubbing_low_load()
+            except Exception as e:
+                logger.warning(f"Failed to schedule memory scrubbing", exc_info=True)
+        if iteration_count % 60 == 0:
+            try:
+                current_latency = self.enhanced_network_stack.measure_network_latency()
+                self.network_buffer_tuner.adjust_buffers_by_latency(current_latency)
+            except Exception as e:
+                logger.warning(f"Failed to adjust network buffers by latency", exc_info=True)
+        if iteration_count % 100 == 0:
+            try:
+                cpu_percent = psutil.cpu_percent(interval=0.1)
+                if cpu_percent < 30:
+                    gc.collect(generation=0)
+            except Exception as e:
+                logger.warning(f"Failed to execute garbage collection", exc_info=True)
+        if iteration_count % 100 == 0:
+            try:
+                self.trim_scheduler.execute_trim()
+            except Exception as e:
+                logger.warning(f"Failed to execute TRIM", exc_info=True)
+
+    def _handle_errors_in_main_loop(self, e: Exception):
+        logger.error(f"Critical error in main execution loop", exc_info=True)
+
+    def shutdown(self):
+        try:
+            self.handle_cache.close_all()
+        except Exception as e:
+            logger.warning(f"Error closing handle cache", exc_info=True)
+        try:
+            self.timer_coalescer._deactivate_high_resolution_timer()
+        except Exception as e:
+            logger.warning(f"Error deactivating high resolution timer", exc_info=True)
+        try:
+            self.temp_monitor.cleanup()
+        except Exception as e:
+            logger.warning(f"Error cleaning up temperature monitor", exc_info=True)
+        try:
+            self.ram_monitor_active = False
+        except Exception as e:
+            logger.warning(f"Error stopping RAM monitor", exc_info=True)
+
     def run(self):
         try:
             self.context_switch_reducer.adjust_quantum_time_slice(increase=True, registry_buffer=self.registry_buffer)
@@ -8106,68 +8003,22 @@ class UnifiedProcessManager:
             try:
                 self.network_interrupt_coalescer.optimize_interrupt_coalescing()
             except Exception as e:
-                logger.warning(f"Fallo al optimizar coalescencia de interrupciones de red", exc_info=True)
+                logger.warning(f"Failed to optimize network interrupt coalescing", exc_info=True)
             try:
                 self.tcp_congestion_tuner.detect_and_tune()
             except Exception as e:
-                logger.warning(f"Fallo al detectar y ajustar congestión TCP (inicio)", exc_info=True)
+                logger.warning(f"Failed to detect and tune TCP congestion (startup)", exc_info=True)
             gc.disable()
             iteration_count = 0
             while True:
-                self.update_all_processes()
-                if self.temp_monitor.monitoring_active:
-                    self.manage_thermal_throttling()
+                self._run_iteration(iteration_count)
                 iteration_count += 1
-                if iteration_count % 10 == 0:
-                    try:
-                        self.adaptive_polling_mgr.adjust_polling_mode()
-                    except Exception as e:
-                        logger.warning(f"Fallo al ajustar modo de polling adaptativo", exc_info=True)
-                if iteration_count % 20 == 0:
-                    try:
-                        self.disk_cache_tuner.tune_cache()
-                    except Exception as e:
-                        logger.warning(f"Fallo al ajustar caché de disco", exc_info=True)
-                    try:
-                        self.multilevel_timer_coalescer.execute_due_tasks()
-                    except Exception as e:
-                        logger.warning(f"Fallo al ejecutar tareas de timer coalescer", exc_info=True)
-                if iteration_count % 30 == 0:
-                    try:
-                        self.tcp_congestion_tuner.detect_and_tune()
-                    except Exception as e:
-                        logger.warning(f"Fallo al detectar y ajustar congestión TCP", exc_info=True)
-                if iteration_count % 50 == 0:
-                    try:
-                        self.memory_scrubbing_optimizer.schedule_scrubbing_low_load()
-                    except Exception as e:
-                        logger.warning(f"Fallo al programar scrubbing de memoria", exc_info=True)
-                if iteration_count % 60 == 0:
-                    try:
-                        current_latency = self.enhanced_network_stack.measure_network_latency()
-                        self.network_buffer_tuner.adjust_buffers_by_latency(current_latency)
-                    except Exception as e:
-                        logger.warning(f"Fallo al ajustar buffers de red por latencia", exc_info=True)
-                if iteration_count % 100 == 0:
-                    try:
-                        cpu_percent = psutil.cpu_percent(interval=0.1)
-                        if cpu_percent < 30:
-                            gc.collect(generation=0)
-                    except Exception as e:
-                        logger.warning(f"Fallo al ejecutar recolección de basura", exc_info=True)
-                if iteration_count % 100 == 0:
-                    try:
-                        self.trim_scheduler.execute_trim()
-                    except Exception as e:
-                        logger.warning(f"Fallo al ejecutar trim", exc_info=True)
                 sleep_time = self.timer_coalescer.get_next_wake_time()
                 time.sleep(sleep_time)
         except Exception as e:
-            logger.error(f"Error crítico en bucle principal de ejecución", exc_info=True)
+            self._handle_errors_in_main_loop(e)
         finally:
-            self.handle_cache.close_all()
-            self.timer_coalescer._deactivate_high_resolution_timer()
-            self.temp_monitor.cleanup()
+            self.shutdown()
 
 def main() -> None:
     logger.info('Starting Optimus Prime...')
@@ -8195,6 +8046,11 @@ def main() -> None:
     logger.info('Manager thread started. Creating tray...')
     tray = SystemTrayManager(manager, manager.temp_monitor)
     logger.info('Tray created. Running tray...')
-    tray.run()
+    try:
+        tray.run()
+    except Exception as e:
+        logger.error('Error in tray manager', exc_info=True)
+    finally:
+        manager.shutdown()
 if __name__ == '__main__':
     main()
