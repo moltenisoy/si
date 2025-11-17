@@ -132,6 +132,7 @@ THREAD_SET_INFORMATION = 32
 THREAD_QUERY_INFORMATION = 64
 THREAD_SET_LIMITED_INFORMATION = 1024
 ThreadIoPriority = 43
+ProcessIoPriority = 33
 PROCESS_POWER_THROTTLING_EXECUTION_SPEED = 1
 PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION = 4
 ProcessPowerThrottling = 77
@@ -180,8 +181,8 @@ class SYSTEM_LOGICAL_PROCESSOR_INFORMATION_UNION(ctypes.Union):
 class SYSTEM_LOGICAL_PROCESSOR_INFORMATION(ctypes.Structure):
     _fields_ = [('ProcessorMask', ULONG_PTR), ('Relationship', wintypes.DWORD), ('u', SYSTEM_LOGICAL_PROCESSOR_INFORMATION_UNION)]
 
-class PROCESSENTRY32(ctypes.Structure):
-    _fields_ = [('dwSize', wintypes.DWORD), ('cntUsage', wintypes.DWORD), ('th32ProcessID', wintypes.DWORD), ('th32DefaultHeapID', ctypes.POINTER(wintypes.ULONG)), ('th32ModuleID', wintypes.DWORD), ('cntThreads', wintypes.DWORD), ('th32ParentProcessID', wintypes.DWORD), ('pcPriClassBase', wintypes.LONG), ('dwFlags', wintypes.DWORD), ('szExeFile', ctypes.c_char * 260)]
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [('dwSize', wintypes.DWORD), ('cntUsage', wintypes.DWORD), ('th32ProcessID', wintypes.DWORD), ('th32DefaultHeapID', ctypes.POINTER(wintypes.ULONG)), ('th32ModuleID', wintypes.DWORD), ('cntThreads', wintypes.DWORD), ('th32ParentProcessID', wintypes.DWORD), ('pcPriClassBase', wintypes.LONG), ('dwFlags', wintypes.DWORD), ('szExeFile', ctypes.c_wchar * 260)]
 
 class THREADENTRY32(ctypes.Structure):
     _fields_ = [('dwSize', wintypes.DWORD), ('cntUsage', wintypes.DWORD), ('th32ThreadID', wintypes.DWORD), ('th32OwnerProcessID', wintypes.DWORD), ('tpBasePri', wintypes.LONG), ('tpDeltaPri', wintypes.LONG), ('dwFlags', wintypes.DWORD)]
@@ -338,7 +339,7 @@ class CTypesStructurePool:
                 self._pools[type_name] = []
             pool = self._pools[type_name]
             if len(pool) < self.max_pool_size:
-                pool.append(type(structure)())
+                pool.append(structure)
 
 class SimpleBloomFilter:
     __slots__ = ('_bit_array', '_size', '_hash_count')
@@ -384,13 +385,15 @@ class RegistryWriteBuffer:
         self.last_flush = time.time()
         self.max_buffer_size = max_buffer_size
 
-    def queue_write(self, key_path, value_name, value_type, value_data):
+    def queue_write(self, key_path, value_name, value_type, value_data, hkey=None):
         with self.lock:
             if not key_path or not isinstance(key_path, str):
                 return
             if not isinstance(value_name, str):
                 return
-            self.buffer.append((key_path, value_name, value_type, value_data))
+            if hkey is None:
+                hkey = winreg.HKEY_LOCAL_MACHINE
+            self.buffer.append((hkey, key_path, value_name, value_type, value_data))
             if len(self.buffer) >= self.max_buffer_size:
                 self.flush()
             elif time.time() - self.last_flush >= self.flush_interval:
@@ -400,10 +403,10 @@ class RegistryWriteBuffer:
         with self.lock:
             if not self.buffer:
                 return
-            for key_path, value_name, value_type, value_data in self.buffer:
+            for hkey, key_path, value_name, value_type, value_data in self.buffer:
                 key = None
                 try:
-                    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY)
+                    key = winreg.OpenKey(hkey, key_path, 0, winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY)
                     winreg.SetValueEx(key, value_name, 0, value_type, value_data)
                 except (OSError, PermissionError, WindowsError):
                     pass
@@ -446,6 +449,13 @@ def memoize_with_ttl(ttl_seconds=300):
     return decorator
 
 class HardwareDetector:
+    """Detects hardware configuration using WMIC.
+    
+    NOTE: WMIC is deprecated in Windows 10/11 and may be removed in future versions.
+    Consider migrating to PowerShell (Get-WmiObject/Get-CimInstance) or pywin32 WMI
+    in the future. Current implementation has robust fallback handling for when WMIC
+    is unavailable.
+    """
 
     def __init__(self):
         self.cpu_vendor = None
@@ -892,9 +902,6 @@ class AdvancedTimerCoalescer:
         with self.lock:
             return self.stats.copy()
 
-    def __del__(self):
-        self._deactivate_high_resolution_timer()
-
 class AdaptiveTimerResolutionManager:
 
     def __init__(self):
@@ -985,6 +992,9 @@ class AdaptiveTimerResolutionManager:
             return {'current_resolution_ms': self.current_resolution_ms, 'active_high_res_processes': len(self.active_high_res_processes), 'total_resolution_changes': self.stats['resolution_changes'], 'high_res_activations': self.stats['high_res_activations'], 'energy_save_activations': self.stats['energy_save_activations'], 'estimated_overhead': 0.05}
 
 class ProcessHandleCache:
+    __slots__ = ('max_cache_size', 'handle_ttl', 'cleanup_interval', 'cache', 
+                 'access_frequency', 'lock', 'debug_privilege_enabled', 
+                 'weak_cache', 'stats', 'cleanup_active', 'cleanup_thread')
 
     def __init__(self, max_cache_size=256, handle_ttl_seconds=30.0, cleanup_interval_seconds=10.0, debug_privilege_enabled=True):
         self.max_cache_size = max_cache_size
@@ -1139,8 +1149,8 @@ class ProcessSnapshotEngine:
         self.last_snapshot_time = 0
         self.cached_snapshot = {}
         self.lock = threading.RLock()
-        self.pe32_struct = PROCESSENTRY32()
-        self.pe32_struct.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        self.pe32_struct = PROCESSENTRY32W()
+        self.pe32_struct.dwSize = ctypes.sizeof(PROCESSENTRY32W)
         self.stats = {'total_snapshots': 0, 'cache_hits': 0, 'avg_snapshot_time_ms': 0, 'total_processes_discovered': 0}
 
     def get_process_snapshot(self, force_refresh=False):
@@ -1174,8 +1184,8 @@ class ProcessSnapshotEngine:
         processes = {}
         try:
             pe32 = self.pe32_struct
-            pe32.dwSize = ctypes.sizeof(PROCESSENTRY32)
-            if not kernel32.Process32First(snapshot_handle, ctypes.byref(pe32)):
+            pe32.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+            if not kernel32.Process32FirstW(snapshot_handle, ctypes.byref(pe32)):
                 logger.warning('Process32First failed')
                 return {}
             iteration_count = 0
@@ -1185,15 +1195,13 @@ class ProcessSnapshotEngine:
                     pid = pe32.th32ProcessID
                     if pid <= 0:
                         continue
-                    name = pe32.szExeFile.decode('utf-8', errors='ignore')
+                    name = pe32.szExeFile
                     if name and name.lower().endswith('.exe'):
                         name = sys.intern(name)
                         processes[pid] = {'pid': pid, 'name': name, 'parent_pid': pe32.th32ParentProcessID, 'threads': pe32.cntThreads, 'priority_base': pe32.pcPriClassBase}
-                except UnicodeDecodeError:
-                    logger.debug(f'Failed to decode process name for PID {pid}')
                 except Exception as e:
                     logger.debug(f'Error processing snapshot entry: {e}')
-                if not kernel32.Process32Next(snapshot_handle, ctypes.byref(pe32)):
+                if not kernel32.Process32NextW(snapshot_handle, ctypes.byref(pe32)):
                     break
                 iteration_count += 1
             if iteration_count >= max_iterations:
@@ -1356,15 +1364,8 @@ class BatchedSettingsApplicator:
 
     def _apply_io_priority(self, pid, io_priority):
         try:
-            if not isinstance(io_priority, int) or not 0 <= io_priority <= 3:
-                return False
-            process = psutil.Process(pid)
-            if not process.is_running():
-                return False
-            process.ionice(io_priority)
-            current_io = process.ionice()
-            return current_io == io_priority
-        except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
+            return self._apply_thread_io_priority(pid, io_priority)
+        except Exception:
             return False
 
     def _apply_eco_qos(self, handle):
@@ -1663,21 +1664,21 @@ class ProcessTreeCache:
             self.child_to_parent.clear()
             self.process_info.clear()
             try:
-                pe32 = PROCESSENTRY32()
-                pe32.dwSize = ctypes.sizeof(PROCESSENTRY32)
-                if kernel32.Process32First(snapshot_handle, ctypes.byref(pe32)):
+                pe32 = PROCESSENTRY32W()
+                pe32.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+                if kernel32.Process32FirstW(snapshot_handle, ctypes.byref(pe32)):
                     while True:
                         try:
                             pid = pe32.th32ProcessID
                             ppid = pe32.th32ParentProcessID
-                            name = pe32.szExeFile.decode('utf-8', errors='ignore')
+                            name = pe32.szExeFile
                             self.process_info[pid] = {'pid': pid, 'ppid': ppid, 'name': name, 'threads': pe32.cntThreads}
                             if ppid != 0:
                                 self.parent_to_children[ppid].add(pid)
                                 self.child_to_parent[pid] = ppid
                         except Exception:
                             pass
-                        if not kernel32.Process32Next(snapshot_handle, ctypes.byref(pe32)):
+                        if not kernel32.Process32NextW(snapshot_handle, ctypes.byref(pe32)):
                             break
             finally:
                 kernel32.CloseHandle(snapshot_handle)
@@ -1957,6 +1958,16 @@ class CPUPinningEngine:
             return self.stats.copy()
 
 class LargePageManager:
+    """Manages large page allocation tracking for processes.
+    
+    LIMITATION: This class cannot actually force external processes to use large pages.
+    Large pages must be requested by the target process itself at memory allocation time
+    using VirtualAlloc with MEM_LARGE_PAGES flag. An external process like this optimizer
+    cannot retroactively enable large pages for already-running processes.
+    
+    The SeLockMemoryPrivilege enabled here applies to THIS process, not target processes.
+    This class primarily tracks which processes might benefit from large pages.
+    """
 
     def __init__(self, handle_cache):
         self.handle_cache = handle_cache
@@ -2023,6 +2034,16 @@ class LargePageManager:
             return self.stats.copy()
 
 class AdvancedWorkingSetTrimmer:
+    """Trims process working sets to free memory.
+    
+    NOTE: Both trim_private_pages() and trim_mapped_files() call the same underlying
+    function _trim_working_set(). SetProcessWorkingSetSize(-1, -1) instructs Windows
+    to trim the entire working set - it does NOT distinguish between private pages
+    and mapped files. The separate methods exist for API compatibility and statistics
+    tracking, but functionally they are identical.
+    
+    For actual working set trimming, WorkingSetOptimizer class should be preferred.
+    """
 
     def __init__(self, handle_cache):
         self.handle_cache = handle_cache
@@ -2040,6 +2061,7 @@ class AdvancedWorkingSetTrimmer:
             return False
 
     def trim_private_pages(self, pid):
+        """Trim working set (affects both private and mapped pages)."""
         with self.lock:
             if self._trim_working_set(pid):
                 self.stats['private_page_trims'] += 1
@@ -2047,6 +2069,7 @@ class AdvancedWorkingSetTrimmer:
             return False
 
     def trim_mapped_files(self, pid):
+        """Trim working set (affects both private and mapped pages)."""
         with self.lock:
             if self._trim_working_set(pid):
                 self.stats['mapped_file_trims'] += 1
@@ -2059,13 +2082,18 @@ class AdvancedWorkingSetTrimmer:
 
 class PrefetchOptimizer:
 
-    def __init__(self):
+    def __init__(self, hardware_detector=None):
         self.lock = threading.RLock()
         self.prefetch_path = 'C:\\Windows\\Prefetch'
         self.stats = {'prefetch_optimizations': 0, 'skipped_ssd': 0, 'skipped_high_load': 0}
+        self.hardware_detector = hardware_detector
 
     def is_mechanical_disk(self):
         try:
+            # Use HardwareDetector if available for accurate SSD/NVMe detection
+            if self.hardware_detector:
+                return not (self.hardware_detector.has_ssd() or self.hardware_detector.has_nvme())
+            # Fallback: assume fixed drives might be mechanical (conservative approach)
             drives = [f'{d}:\\' for d in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' if os.path.exists(f'{d}:\\')]
             for drive in drives:
                 try:
@@ -2104,6 +2132,16 @@ class PrefetchOptimizer:
             return False
 
     def optimize_prefetch_for_process(self, pid, exe_path):
+        """Attempt to trigger prefetch optimization for a process executable.
+        
+        LIMITATION: Simply opening and closing a file handle to the executable is unlikely
+        to meaningfully influence Windows' Prefetch/Superfetch (SysMain) behavior. These
+        are complex OS-level services that analyze actual execution patterns over time.
+        
+        This method is a best-effort approach with minimal expected impact. True prefetch
+        optimization happens automatically through Windows' built-in telemetry and cannot
+        be directly controlled by external processes.
+        """
         with self.lock:
             if not self.should_optimize_prefetch():
                 return False
@@ -2235,18 +2273,25 @@ class ProcessServiceManager:
             return self.stats.copy()
 
 class CPUParkingController:
+    """Controls CPU parking globally via power plan settings.
+    
+    Note: CPU parking cannot be controlled per-core via powercfg. The CPMINCORES setting
+    is a global minimum for the entire system, not per-core.
+    """
 
     def __init__(self):
         self.lock = threading.RLock()
-        self.parking_disabled_cores = set()
         self.stats = {'total_parking_changes': 0, 'disabled_count': 0, 'enabled_count': 0}
 
-    def disable_cpu_parking(self, core_id):
+    def disable_cpu_parking(self):
+        """Disable CPU parking globally for all cores (not per-core).
+        
+        Note: CPMINCORES is a global power plan setting, not per-core.
+        """
         with self.lock:
             try:
                 result = subprocess.run(['powercfg', '/setacvalueindex', 'SCHEME_CURRENT', 'SUB_PROCESSOR', 'CPMINCORES', '100'], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
                 if result.returncode == 0:
-                    self.parking_disabled_cores.add(core_id)
                     self.stats['total_parking_changes'] += 1
                     self.stats['disabled_count'] += 1
                     return True
@@ -2254,12 +2299,15 @@ class CPUParkingController:
             except Exception:
                 return False
 
-    def enable_cpu_parking(self, core_id):
+    def enable_cpu_parking(self):
+        """Enable CPU parking globally for all cores (not per-core).
+        
+        Note: CPMINCORES is a global power plan setting, not per-core.
+        """
         with self.lock:
             try:
                 result = subprocess.run(['powercfg', '/setacvalueindex', 'SCHEME_CURRENT', 'SUB_PROCESSOR', 'CPMINCORES', '0'], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
                 if result.returncode == 0:
-                    self.parking_disabled_cores.discard(core_id)
                     self.stats['total_parking_changes'] += 1
                     self.stats['enabled_count'] += 1
                     return True
@@ -2817,7 +2865,6 @@ class NetworkOptimizer:
                 key_path = 'SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters'
                 try:
                     key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE)
-                    winreg.SetValueEx(key, 'TcpWindowSize', 0, winreg.REG_DWORD, TCP_OPTIMAL_WINDOW_SIZE)
                     winreg.SetValueEx(key, 'Tcp1323Opts', 0, winreg.REG_DWORD, 3)
                     winreg.CloseKey(key)
                     self.stats['optimizations_applied'] += 1
@@ -2886,18 +2933,10 @@ class KernelOptimizer:
 
     def optimize_timer_resolution(self):
         with self.lock:
-            try:
-                key_path = 'SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile'
-                try:
-                    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE)
-                    winreg.SetValueEx(key, 'SystemResponsiveness', 0, winreg.REG_DWORD, 0)
-                    winreg.CloseKey(key)
-                    self.stats['optimizations_applied'] += 1
-                    return True
-                except Exception:
-                    return False
-            except Exception:
-                return False
+            # Timer resolution optimization is now handled by AdvancedTimerCoalescer
+            # and AdaptiveTimerResolutionManager classes. This method is kept for
+            # backward compatibility but no longer modifies system settings directly.
+            return True
 
     def increase_paged_pool_size(self):
         with self.lock:
@@ -4166,7 +4205,7 @@ class SystemTrayManager:
             return
         try:
             self.manager.cpu_frequency_scaler.set_turbo_mode(enable=True)
-            self.manager.cpu_parking_controller.disable_cpu_parking(0)
+            self.manager.cpu_parking_controller.disable_cpu_parking()
             try:
                 subprocess.run(['powercfg', '/setactive', HIGH_PERFORMANCE_POWER_PLAN_GUID], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=5)
             except Exception as e:
@@ -5530,7 +5569,6 @@ class AggressiveWriteCache:
         try:
             key_path = 'SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management'
             key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE)
-            winreg.SetValueEx(key, 'LargeSystemCache', 0, winreg.REG_DWORD, 1)
             winreg.SetValueEx(key, 'IoPageLockLimit', 0, winreg.REG_DWORD, self.write_buffer_size)
             winreg.CloseKey(key)
         except Exception as e:
@@ -6522,6 +6560,7 @@ class UnifiedProcessManager:
             self.interned_process_names[name] = sys.intern(name)
         self.timer_coalescer = AdvancedTimerCoalescer(base_resolution_ms=1)
         self._register_coalesced_tasks()
+        self.hardware_detector = HardwareDetector()
         self.handle_cache = ProcessHandleCache(max_cache_size=256, handle_ttl_seconds=30.0, debug_privilege_enabled=self.debug_privilege_enabled)
         self.process_snapshot = ProcessSnapshotEngine(cache_ttl_ms=500)
         self.settings_applicator = BatchedSettingsApplicator(self.handle_cache)
@@ -6531,7 +6570,7 @@ class UnifiedProcessManager:
         self.cpu_pinning = CPUPinningEngine(self.handle_cache, self.cpu_count, self.topology)
         self.large_page_manager = LargePageManager(self.handle_cache)
         self.advanced_ws_trimmer = AdvancedWorkingSetTrimmer(self.handle_cache)
-        self.prefetch_optimizer = PrefetchOptimizer()
+        self.prefetch_optimizer = PrefetchOptimizer(self.hardware_detector)
         self.memory_priority_manager = MemoryPriorityManager(self.handle_cache)
         self.process_service_manager = ProcessServiceManager()
         self.cpu_parking_controller = CPUParkingController()
@@ -6601,7 +6640,6 @@ class UnifiedProcessManager:
         self._enhanced_system_responsiveness = None
         self._thermal_aware_scheduler = None
         self._process_dependency_analyzer = None
-        self.hardware_detector = HardwareDetector()
         self.decision_cache = OptimizationDecisionCache(ttl_seconds=300)
         self.integrity_validator = IntegrityValidator(self.handle_cache)
         self.suspension_manager = ProcessSuspensionManager()
