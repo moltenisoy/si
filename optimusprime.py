@@ -2865,7 +2865,6 @@ class NetworkOptimizer:
                 key_path = 'SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters'
                 try:
                     key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE)
-                    winreg.SetValueEx(key, 'TcpWindowSize', 0, winreg.REG_DWORD, TCP_OPTIMAL_WINDOW_SIZE)
                     winreg.SetValueEx(key, 'Tcp1323Opts', 0, winreg.REG_DWORD, 3)
                     winreg.CloseKey(key)
                     self.stats['optimizations_applied'] += 1
@@ -2934,18 +2933,10 @@ class KernelOptimizer:
 
     def optimize_timer_resolution(self):
         with self.lock:
-            try:
-                key_path = 'SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile'
-                try:
-                    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE)
-                    winreg.SetValueEx(key, 'SystemResponsiveness', 0, winreg.REG_DWORD, 0)
-                    winreg.CloseKey(key)
-                    self.stats['optimizations_applied'] += 1
-                    return True
-                except Exception:
-                    return False
-            except Exception:
-                return False
+            # Timer resolution optimization is now handled by AdvancedTimerCoalescer
+            # and AdaptiveTimerResolutionManager classes. This method is kept for
+            # backward compatibility but no longer modifies system settings directly.
+            return True
 
     def increase_paged_pool_size(self):
         with self.lock:
@@ -5577,7 +5568,6 @@ class AggressiveWriteCache:
         try:
             key_path = 'SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management'
             key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE)
-            winreg.SetValueEx(key, 'LargeSystemCache', 0, winreg.REG_DWORD, 1)
             winreg.SetValueEx(key, 'IoPageLockLimit', 0, winreg.REG_DWORD, self.write_buffer_size)
             winreg.CloseKey(key)
         except Exception:
@@ -6047,13 +6037,6 @@ class DynamicNetworkBufferTuner:
                 self.buffer_size = 65535
             else:
                 self.buffer_size = 131072
-            try:
-                key_path = 'SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters'
-                key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE)
-                winreg.SetValueEx(key, 'TcpWindowSize', 0, winreg.REG_DWORD, self.buffer_size)
-                winreg.CloseKey(key)
-            except Exception:
-                pass
 
 class BBRCongestionControl:
 
