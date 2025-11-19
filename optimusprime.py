@@ -399,12 +399,17 @@ class HardwareDetector:
         self._detect_cpu()
         self._detect_gpu()
         self._detect_storage()
-    def _detect_cpu(self):
+    def _get_wmic_cmd(self):
         wmic_cmd = shutil.which(WMIC_COMMAND_PATH)
         if not wmic_cmd:
             wmic_cmd = os.path.join(os.environ.get('SystemRoot', 'C:\\Windows'), 'System32', 'wmic.exe')
             if not os.path.exists(wmic_cmd):
-                return
+                return None
+        return wmic_cmd
+    def _detect_cpu(self):
+        wmic_cmd = self._get_wmic_cmd()
+        if not wmic_cmd:
+            return
         result = subprocess.run([wmic_cmd, 'cpu', 'get', 'manufacturer,name', '/format:list'], capture_output=True, text=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0)
         if result.returncode == 0:
             cpu_info = result.stdout
@@ -416,14 +421,10 @@ class HardwareDetector:
                 if line.startswith('Name='):
                     self.cpu_model = line.split('=', 1)[1].strip()
                     break
-        else:
-            pass
     def _detect_gpu(self):
-        wmic_cmd = shutil.which(WMIC_COMMAND_PATH)
+        wmic_cmd = self._get_wmic_cmd()
         if not wmic_cmd:
-            wmic_cmd = os.path.join(os.environ.get('SystemRoot', 'C:\\Windows'), 'System32', 'wmic.exe')
-            if not os.path.exists(wmic_cmd):
-                return
+            return
         result = subprocess.run([wmic_cmd, 'path', 'win32_VideoController', 'get', 'name', '/format:list'], capture_output=True, text=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0)
         if result.returncode == 0:
             gpu_info = result.stdout
@@ -433,14 +434,10 @@ class HardwareDetector:
                 self.gpu_vendor = 'AMD'
             elif 'Intel' in gpu_info:
                 self.gpu_vendor = 'Intel'
-        else:
-            pass
     def _detect_storage(self):
-        wmic_cmd = shutil.which(WMIC_COMMAND_PATH)
+        wmic_cmd = self._get_wmic_cmd()
         if not wmic_cmd:
-            wmic_cmd = os.path.join(os.environ.get('SystemRoot', 'C:\\Windows'), 'System32', 'wmic.exe')
-            if not os.path.exists(wmic_cmd):
-                return
+            return
         result = subprocess.run([wmic_cmd, 'diskdrive', 'get', 'MediaType,Model,InterfaceType', '/format:list'], capture_output=True, text=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0)
         if result.returncode == 0:
             disk_info = result.stdout
@@ -450,8 +447,6 @@ class HardwareDetector:
                 self.storage_types.add('HDD')
             if 'NVMe' in disk_info or 'NVME' in disk_info:
                 self.storage_types.add('NVMe')
-        else:
-            pass
     def is_intel_cpu(self):
         return self.cpu_vendor == 'Intel'
     def is_amd_cpu(self):
@@ -1560,21 +1555,14 @@ class LargePageManager:
         with self.lock:
             return self.stats.copy()
 class AdvancedWorkingSetTrimmer:
-    """
-    Utilidad para aplicar SetProcessWorkingSetSize(handle, -1, -1),
-    que solicita al OS que recorte el conjunto de trabajo del proceso (páginas
-    privadas y mapeadas).
-    """
+
     __slots__ = ('handle_cache', 'lock', 'stats')
     def __init__(self, handle_cache):
         self.handle_cache = handle_cache
         self.lock = threading.RLock()
         self.stats = {'total_trims': 0}
     def trim_full_working_set(self, pid):
-        """
-        Solicita al sistema operativo que recorte el conjunto de trabajo completo (privado y mapeado)
-        del proceso especificado.
-        """
+
         with self.lock:
             handle = self.handle_cache.get_handle(pid, PROCESS_SET_INFORMATION | PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA)
             if not handle:
@@ -1588,12 +1576,7 @@ class AdvancedWorkingSetTrimmer:
         with self.lock:
             return self.stats.copy()
 class PrefetchOptimizer:
-    """
-    Optimiza el servicio Prefetch (SysMain) del sistema.
-    La optimización moderna consiste en deshabilitar este servicio si se
-    detecta un SSD o NVMe, ya que el beneficio es mínimo y se
-    reducen escrituras innecesarias.
-    """
+
     __slots__ = ('lock', 'stats', 'hardware_detector', 'service_name')
     def __init__(self, hardware_detector=None):
         self.lock = threading.RLock()
@@ -1601,10 +1584,7 @@ class PrefetchOptimizer:
         self.hardware_detector = hardware_detector
         self.service_name = 'SysMain'
     def check_and_disable_for_ssd(self, registry_buffer: Optional[RegistryWriteBuffer] = None):
-        """
-        Comprueba si el sistema tiene un SSD y, de ser así, deshabilita SysMain
-        (Superfetch) para reducir escrituras innecesarias.
-        """
+
         with self.lock:
             if not self.hardware_detector or \
                not (self.hardware_detector.has_ssd() or self.hardware_detector.has_nvme()):
@@ -3279,12 +3259,6 @@ def enable_debug_privilege():
     error = kernel32.GetLastError()
     if result != 0 and error == 0:
         return True
-    if error == 1300:
-        pass
-    elif result == 0:
-        pass
-    else:
-        pass
     return False
 def set_process_affinity_direct(handle, core_list):
     if not handle or not core_list:
@@ -3316,8 +3290,6 @@ def get_process_affinity_direct(handle):
             core_idx += 1
         return cores if cores else None
     error_code = kernel32.GetLastError()
-    if error_code != 0:
-        pass
     return None
 def set_page_priority_for_pid(pid, page_priority):
     h_process = None
@@ -3328,8 +3300,6 @@ def set_page_priority_for_pid(pid, page_priority):
     h_process = kernel32.OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_INFORMATION, False, pid)
     if not h_process:
         error_code = kernel32.GetLastError()
-        if error_code != 5:
-            pass
         return False
     priority_value = ctypes.c_ulong(page_priority)
     result = NtSetInformationProcess(h_process, ProcessPagePriority, ctypes.byref(priority_value), ctypes.sizeof(priority_value))
@@ -4166,13 +4136,10 @@ class CustomIOScheduler:
         priority = request.get('priority', 1)
         if self.scheduling_algorithm == 'deadline':
             deadline = request.get('deadline', time.time() + 1.0)
-            pass
         elif self.scheduling_algorithm == 'cfq':
             process_id = request.get('pid', 0)
-            pass
         elif self.scheduling_algorithm == 'bfq':
             bandwidth = request.get('bandwidth', 1)
-            pass
         self.stats['io_processed'] += 1
     def get_queue_status(self):
         with self.lock:
@@ -4449,8 +4416,6 @@ class MetadataOptimizer:
     def _compact_metadata(self):
         if len(self.metadata_cache) > 1000:
             self.metadata_cache = dict(list(self.metadata_cache.items())[-500:])
-    def _update_indexes(self):
-        pass
     def get_from_cache(self, key):
         with self.lock:
             if key in self.metadata_cache:
@@ -4813,8 +4778,6 @@ class UnifiedProcessManager:
     def __init__(self, debug_privilege_enabled: bool=True):
         self.lock = threading.RLock()
         self.debug_privilege_enabled = debug_privilege_enabled
-        if not self.debug_privilege_enabled:
-            pass
         self.cpu_count = psutil.cpu_count(logical=True)
         self.topology = self._query_cpu_topology()
         self.pe_core_sets = self._classify_pe_cores()
@@ -5607,8 +5570,6 @@ class UnifiedProcessManager:
                 gc.collect(generation=0)
         if iteration_count % 100 == 0:
             self.trim_scheduler.execute_trim()
-    def _handle_errors_in_main_loop(self, e: Exception):
-        pass
     def shutdown(self):
         self.handle_cache.close_all()
         self.timer_coalescer._deactivate_high_resolution_timer()
@@ -5622,21 +5583,6 @@ class UnifiedProcessManager:
         self.network_interrupt_coalescer.optimize_interrupt_coalescing()
 def main() -> None:
     debug_enabled = enable_debug_privilege()
-    if debug_enabled:
-        pass
-    else:
-        elevation_method = relaunch_with_elevation()
-        if elevation_method:
-            if elevation_method == 'nsudo':
-                pass
-            else:
-                pass
-            return
-        warning_message = 'WARNING: SeDebugPrivilege unavailable. Running with limited functionality; some optimizations may fail. For full access, rerun this script from an elevated PowerShell window or place NSudo.exe next to the script.'
-        if not is_user_admin():
-            pass
-        else:
-            pass
     manager = UnifiedProcessManager(debug_privilege_enabled=debug_enabled)
     manager_thread = threading.Thread(target=manager.run, daemon=True, name='ProcessManager')
     manager_thread.start()
